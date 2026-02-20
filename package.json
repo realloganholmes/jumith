@@ -1,0 +1,37 @@
+{
+  "name": "jumith",
+  "version": "1.0.0",
+  "description": "The agent to \"Just Make It Happen\"",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/realloganholmes/jumith.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/realloganholmes/jumith/issues"
+  },
+  "homepage": "https://github.com/realloganholmes/jumith#readme",
+  "dependencies": {
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.55.0",
+    "@typescript-eslint/parser": "^8.55.0",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3"
+  }
+}
