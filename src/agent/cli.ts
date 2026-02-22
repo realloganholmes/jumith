@@ -2,6 +2,8 @@ import readline from "readline";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { AgentOrchestrator } from "./AgentOrchestrator";
 import { SqliteMemoryService } from "../memory/SqliteMemoryService";
+import dotenv from "dotenv";
+dotenv.config();
 
 const apiKey = process.env.LLM_API_KEY ?? "";
 const baseUrl = process.env.LLM_BASE_URL ?? "https://api.openai.com";

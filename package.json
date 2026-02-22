@@ -26,6 +26,7 @@
   "homepage": "https://github.com/realloganholmes/jumith#readme",
   "dependencies": {
     "@types/node": "^25.3.0",
+    "dotenv": "^17.3.1",
     "sqlite3": "^5.1.7"
   },
   "devDependencies": {
