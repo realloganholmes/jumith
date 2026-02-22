@@ -1,6 +1,7 @@
 import readline from "readline";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { AgentOrchestrator } from "./AgentOrchestrator";
+import { LLMFactExtractor } from "../memory/LLMFactExtractor";
 import { SqliteMemoryService } from "../memory/SqliteMemoryService";
 import dotenv from "dotenv";
 dotenv.config();
@@ -21,7 +22,8 @@ const llm = new OpenAICompatibleProvider({
 });
 
 const memory = new SqliteMemoryService("jumith.db");
-const agent = new AgentOrchestrator(llm, memory);
+const factExtractor = new LLMFactExtractor(llm, memory);
+const agent = new AgentOrchestrator(llm, memory, factExtractor);
 
 async function main(): Promise<void> {
   await agent.init();
