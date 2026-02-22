@@ -3,6 +3,10 @@ import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { AgentOrchestrator } from "./AgentOrchestrator";
 import { LLMFactExtractor } from "../memory/LLMFactExtractor";
 import { SqliteMemoryService } from "../memory/SqliteMemoryService";
+import { AddTool } from "../tools/AddTool";
+import { EchoTool } from "../tools/EchoTool";
+import { PizzaOrderTool } from "../tools/PizzaOrderTool";
+import { TimeTool } from "../tools/TimeTool";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -23,7 +27,12 @@ const llm = new OpenAICompatibleProvider({
 
 const memory = new SqliteMemoryService("jumith.db");
 const factExtractor = new LLMFactExtractor(llm, memory);
-const agent = new AgentOrchestrator(llm, memory, factExtractor);
+const agent = new AgentOrchestrator(llm, memory, factExtractor, [
+  new EchoTool(),
+  new TimeTool(),
+  new AddTool(),
+  new PizzaOrderTool(),
+]);
 
 async function main(): Promise<void> {
   await agent.init();

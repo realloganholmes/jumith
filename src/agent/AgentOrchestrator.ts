@@ -65,6 +65,9 @@ export class AgentOrchestrator {
 
           "Only say you do not know if AND ONLY IF the fact search returns no relevant results.\n\n" +
 
+          "When calling tools that require personal details (like name or address), " +
+          "use facts if available to fill inputs instead of asking again.\n\n" +
+
           "Available tools:\n" +
           `${toolList}\n\n` +
 
@@ -99,12 +102,15 @@ export class AgentOrchestrator {
       }
 
       if (action.action === "use_tool") {
+        console.log(`[tool] use_tool: ${action.name}`);
+        console.log(`[tool] input: ${this.stringifyValue(action.input)}`);
         const tool = this.toolCatalog.get(action.name);
         if (!tool) {
           const toolMessage = this.renderToolErrorMessage(
             action.name,
             "Tool not available."
           );
+          console.log(`[tool] result -> LLM: ${toolMessage.content}`);
           messages = [...promptBase, toolMessage];
           continue;
         }
@@ -122,6 +128,7 @@ export class AgentOrchestrator {
             finishedAt,
           });
           const toolMessage = this.renderToolResultMessage(tool.name, output);
+          console.log(`[tool] result -> LLM: ${toolMessage.content}`);
           messages = [...promptBase, toolMessage];
         } catch (error) {
           const finishedAt = Date.now();
@@ -139,6 +146,7 @@ export class AgentOrchestrator {
             tool.name,
             errorMessage
           );
+          console.log(`[tool] result -> LLM: ${toolMessage.content}`);
           messages = [...promptBase, toolMessage];
         }
       }
