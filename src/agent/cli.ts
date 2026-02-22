@@ -1,13 +1,17 @@
+import path from "path";
 import readline from "readline";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { AgentOrchestrator } from "./AgentOrchestrator";
 import { LLMFactExtractor } from "../memory/LLMFactExtractor";
 import { SqliteMemoryService } from "../memory/SqliteMemoryService";
+import { RegistryClient } from "../registry/RegistryClient";
 import { AddTool } from "../tools/AddTool";
 import { EchoTool } from "../tools/EchoTool";
+import { LocalToolStore } from "../tools/LocalToolStore";
 import { PizzaOrderTool } from "../tools/PizzaOrderTool";
 import { TimeTool } from "../tools/TimeTool";
 import { Tool } from "../tools/Tool";
+import { ToolInstaller } from "../tools/ToolInstaller";
 import { SqliteSecretStore } from "../vault/SqliteSecretStore";
 import dotenv from "dotenv";
 dotenv.config();
@@ -15,6 +19,8 @@ dotenv.config();
 const apiKey = process.env.LLM_API_KEY ?? "";
 const baseUrl = process.env.LLM_BASE_URL ?? "https://api.openai.com";
 const model = process.env.LLM_MODEL ?? "gpt-4o-mini";
+const registryBaseUrl = process.env.REGISTRY_BASE_URL ?? "";
+const toolCacheDir = process.env.TOOL_CACHE_DIR ?? "tool-cache";
 
 if (!apiKey) {
   throw new Error("Missing LLM_API_KEY");
@@ -50,15 +56,43 @@ async function main(): Promise<void> {
     return value.length > 0 ? value : null;
   };
 
-  const tools: Array<Tool<any, any>> = [
+  const registry =
+    registryBaseUrl.trim().length > 0
+      ? new RegistryClient({ baseUrl: registryBaseUrl, timeoutMs: 15000 })
+      : null;
+  const toolStore = new LocalToolStore(path.resolve(toolCacheDir));
+  await toolStore.init();
+  const installer = registry ? new ToolInstaller(registry, toolStore) : null;
+
+  const localTools: Array<Tool<unknown, unknown>> = [
     new EchoTool(),
     new TimeTool(),
     new AddTool(),
     new PizzaOrderTool(),
   ];
-  const toolsByName = new Map<string, Tool<any, any>>(
-    tools.map((tool) => [tool.name, tool])
-  );
+  let installedTools: Array<Tool<unknown, unknown>> = [];
+  let tools: Array<Tool<unknown, unknown>> = [];
+  let toolsByName = new Map<string, Tool<unknown, unknown>>();
+
+  const refreshTools = async (): Promise<void> => {
+    try {
+      const loaded = await toolStore.loadTools();
+      installedTools = loaded.tools;
+      tools = [...localTools, ...installedTools];
+      toolsByName = new Map<string, Tool<unknown, unknown>>(
+        tools.map((tool) => [tool.name, tool])
+      );
+      if (loaded.errors.length > 0) {
+        console.log("Some installed tools failed to load:");
+        for (const error of loaded.errors) {
+          console.log(`  - ${error}`);
+        }
+      }
+    } catch (error) {
+      console.log(`Tool refresh failed: ${(error as Error).message}`);
+    }
+  };
+  await refreshTools();
 
   const buildSecretKey = (toolName: string, secretName: string): string =>
     `${toolName}-${secretName}`;
@@ -67,7 +101,12 @@ async function main(): Promise<void> {
     console.log("Commands:");
     console.log("  help | ?                        Show this help");
     console.log("  tools                           List available tools");
+    console.log("  tools install <id> [version]    Install tool from registry");
+    console.log("  tools remove <id>               Remove installed tool");
+    console.log("  tools list-installed            List installed registry tools");
     console.log("  tool <name>                     Describe a tool");
+    console.log("  registry search <query>         Search the registry");
+    console.log("  registry describe <id>          Show registry tool details");
     console.log("  secrets status <tool>           Show secrets status for a tool");
     console.log("  secrets clear <tool>            Clear secrets for a tool");
     console.log("  secrets clear-all               Clear all secrets");
@@ -104,6 +143,119 @@ async function main(): Promise<void> {
     console.log(
       `Required secrets: ${secrets.length > 0 ? secrets.join(", ") : "(none)"}`
     );
+  };
+
+  const listInstalledTools = async (): Promise<void> => {
+    try {
+      const installed = await toolStore.listInstalled();
+      if (installed.length === 0) {
+        console.log("No registry tools installed.");
+        return;
+      }
+      console.log("Installed registry tools:");
+      for (const tool of installed) {
+        console.log(`  - ${tool.name} (${tool.id}) @ ${tool.version}`);
+      }
+    } catch (error) {
+      console.log(`Failed to list installed tools: ${(error as Error).message}`);
+    }
+  };
+
+  const searchRegistry = async (query: string): Promise<void> => {
+    try {
+      if (!registry) {
+        console.log("Registry not configured. Set REGISTRY_BASE_URL.");
+        return;
+      }
+      const trimmed = query.trim();
+      if (!trimmed) {
+        console.log("Usage: registry search <query>");
+        return;
+      }
+      const result = await registry.searchTools(trimmed, { limit: 20 });
+      if (result.results.length === 0) {
+        console.log("No tools found.");
+        return;
+      }
+      console.log(`Found ${result.results.length} tool(s):`);
+      for (const tool of result.results) {
+        console.log(`  - ${tool.name} (${tool.id}) @ ${tool.version}`);
+        console.log(`    ${tool.summary}`);
+      }
+    } catch (error) {
+      console.log(`Registry search failed: ${(error as Error).message}`);
+    }
+  };
+
+  const describeRegistryTool = async (toolId: string): Promise<void> => {
+    try {
+      if (!registry) {
+        console.log("Registry not configured. Set REGISTRY_BASE_URL.");
+        return;
+      }
+      const trimmed = toolId.trim();
+      if (!trimmed) {
+        console.log("Usage: registry describe <id>");
+        return;
+      }
+      const tool = await registry.describeTool(trimmed);
+      console.log(`Name: ${tool.name}`);
+      console.log(`Id: ${tool.id}`);
+      console.log(`Version: ${tool.version}`);
+      console.log(`Summary: ${tool.summary}`);
+      console.log(`Description: ${tool.description}`);
+      console.log(
+        `Requires approval: ${tool.requiresApproval ? "yes" : "no"}`
+      );
+      console.log(
+        `Required secrets: ${
+          tool.requiredSecrets && tool.requiredSecrets.length > 0
+            ? tool.requiredSecrets.join(", ")
+            : "(none)"
+        }`
+      );
+    } catch (error) {
+      console.log(`Registry describe failed: ${(error as Error).message}`);
+    }
+  };
+
+  const installRegistryTool = async (
+    toolId: string,
+    version?: string
+  ): Promise<void> => {
+    try {
+      if (!installer) {
+        console.log("Registry not configured. Set REGISTRY_BASE_URL.");
+        return;
+      }
+      const trimmed = toolId.trim();
+      if (!trimmed) {
+        console.log("Usage: tools install <id> [version]");
+        return;
+      }
+      const manifest = await installer.installFromRegistry(trimmed, version);
+      console.log(
+        `Installed ${manifest.name} (${manifest.id}) @ ${manifest.version}`
+      );
+      await refreshTools();
+    } catch (error) {
+      console.log(`Tool install failed: ${(error as Error).message}`);
+    }
+  };
+
+  const removeInstalledTool = async (toolId: string): Promise<void> => {
+    try {
+      const trimmed = toolId.trim();
+      if (!trimmed) {
+        console.log("Usage: tools remove <id>");
+        return;
+      }
+      await toolStore.removeTool(trimmed);
+      console.log(`Removed ${trimmed}`);
+      await refreshTools();
+    } catch (error) {
+      console.log(`Tool remove failed: ${(error as Error).message}`);
+    }
   };
 
   const showSecretStatus = async (toolName: string): Promise<void> => {
@@ -237,7 +389,42 @@ async function main(): Promise<void> {
       continue;
     }
     if (lowerCommand === "tools") {
-      printToolList();
+      const action = rest[0]?.toLowerCase();
+      if (!action) {
+        printToolList();
+        continue;
+      }
+      if (action === "install") {
+        const toolId = rest[1] ?? "";
+        const version = rest[2];
+        await installRegistryTool(toolId, version);
+        continue;
+      }
+      if (action === "remove") {
+        const toolId = rest[1] ?? "";
+        await removeInstalledTool(toolId);
+        continue;
+      }
+      if (action === "list-installed") {
+        await listInstalledTools();
+        continue;
+      }
+      console.log("Usage: tools [install|remove|list-installed]");
+      continue;
+    }
+    if (lowerCommand === "registry") {
+      const action = rest[0]?.toLowerCase();
+      if (action === "search") {
+        const query = rest.slice(1).join(" ");
+        await searchRegistry(query);
+        continue;
+      }
+      if (action === "describe") {
+        const toolId = rest.slice(1).join(" ").trim();
+        await describeRegistryTool(toolId);
+        continue;
+      }
+      console.log("Usage: registry search <query> | registry describe <id>");
       continue;
     }
     if (lowerCommand === "tool") {
