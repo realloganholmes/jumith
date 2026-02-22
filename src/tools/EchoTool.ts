@@ -1,4 +1,4 @@
-import { Tool } from "./Tool";
+import { Tool, ToolExecutionContext } from "./Tool";
 
 type EchoInput = {
   text: string;
@@ -12,7 +12,10 @@ export class EchoTool implements Tool<EchoInput, EchoOutput> {
   name = "echo";
   description = "Echo back input text. Input: { text: string }";
 
-  async execute(input: EchoInput): Promise<EchoOutput> {
+  async execute(
+    input: EchoInput,
+    _context?: ToolExecutionContext
+  ): Promise<EchoOutput> {
     const text = this.normalizeText(input);
     return { text };
   }

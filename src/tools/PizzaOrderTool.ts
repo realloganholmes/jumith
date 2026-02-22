@@ -1,4 +1,4 @@
-import { Tool } from "./Tool";
+import { Tool, ToolExecutionContext } from "./Tool";
 
 type PizzaOrderInput = {
   name: string;
@@ -14,11 +14,17 @@ export class PizzaOrderTool implements Tool<PizzaOrderInput, PizzaOrderOutput> {
   name = "order_pizza";
   description =
     "Mock pizza order. Input: { name: string, address: string }";
+  requiredSecrets = ["dominos_username", "dominos_password"];
   requiresApproval = true;
 
-  async execute(input: PizzaOrderInput): Promise<PizzaOrderOutput> {
+  async execute(
+    input: PizzaOrderInput,
+    context?: ToolExecutionContext
+  ): Promise<PizzaOrderOutput> {
     const name = this.requireString(input?.name, "name");
     const address = this.requireString(input?.address, "address");
+    this.requireSecret(context, "dominos_username");
+    this.requireSecret(context, "dominos_password");
     const orderId = `pizza_${Date.now()}`;
     return {
       orderId,
@@ -38,5 +44,17 @@ export class PizzaOrderTool implements Tool<PizzaOrderInput, PizzaOrderOutput> {
       return value.trim();
     }
     throw new Error(`Missing ${label}`);
+  }
+
+  private requireSecret(
+    context: ToolExecutionContext | undefined,
+    secretName: string
+  ): string {
+    const key = `${this.name}-${secretName}`;
+    const value = context?.env?.[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+    throw new Error(`Missing required secret: ${secretName}`);
   }
 }

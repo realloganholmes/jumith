@@ -7,6 +7,7 @@ import { AddTool } from "../tools/AddTool";
 import { EchoTool } from "../tools/EchoTool";
 import { PizzaOrderTool } from "../tools/PizzaOrderTool";
 import { TimeTool } from "../tools/TimeTool";
+import { SqliteSecretStore } from "../vault/SqliteSecretStore";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -27,6 +28,7 @@ const llm = new OpenAICompatibleProvider({
 
 const memory = new SqliteMemoryService("jumith.db");
 const factExtractor = new LLMFactExtractor(llm, memory);
+const secretStore = new SqliteSecretStore("jumith.db");
 
 async function main(): Promise<void> {
   const rl = readline.createInterface({
@@ -42,12 +44,19 @@ async function main(): Promise<void> {
     return answer === "y" || answer === "yes";
   };
 
+  const promptSecret = async (message: string): Promise<string | null> => {
+    const value = (await ask(message)).trim();
+    return value.length > 0 ? value : null;
+  };
+
   const agent = new AgentOrchestrator(
     llm,
     memory,
     factExtractor,
     [new EchoTool(), new TimeTool(), new AddTool(), new PizzaOrderTool()],
-    async ({ message }) => confirm(message)
+    async ({ message }) => confirm(message),
+    secretStore,
+    async ({ message }) => promptSecret(message)
   );
 
   await agent.init();

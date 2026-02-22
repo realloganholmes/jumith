@@ -1,4 +1,4 @@
-import { Tool } from "./Tool";
+import { Tool, ToolExecutionContext } from "./Tool";
 
 type AddInput = {
   a: number;
@@ -13,7 +13,10 @@ export class AddTool implements Tool<AddInput, AddOutput> {
   name = "add";
   description = "Add two numbers. Input: { a: number, b: number }";
 
-  async execute(input: AddInput): Promise<AddOutput> {
+  async execute(
+    input: AddInput,
+    _context?: ToolExecutionContext
+  ): Promise<AddOutput> {
     const a = this.parseNumber(input?.a, "a");
     const b = this.parseNumber(input?.b, "b");
     return { sum: a + b };

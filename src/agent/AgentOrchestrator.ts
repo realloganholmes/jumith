@@ -1,8 +1,9 @@
 import { ChatMessage, LLMProvider } from "../llm/LLMProvider";
 import { FactExtractor } from "../memory/FactExtractor";
 import { FactRecord, MemoryService } from "../memory/MemoryService";
-import { Tool } from "../tools/Tool";
+import { Tool, ToolExecutionContext } from "../tools/Tool";
 import { ToolCatalog } from "../tools/ToolCatalog";
+import { SecretStore } from "../vault/SecretStore";
 
 type LlmAction =
   | { action: "search_facts"; terms: string[] }
@@ -17,23 +18,41 @@ type ToolApprovalRequest = {
 
 type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<boolean>;
 
+type SecretRequest = {
+  toolName: string;
+  secretName: string;
+  key: string;
+  message: string;
+};
+
+type SecretPromptHandler = (request: SecretRequest) => Promise<string | null>;
+
 export class AgentOrchestrator {
   private readonly toolCatalog = new ToolCatalog();
   private readonly approvalHandler?: ToolApprovalHandler;
+  private readonly secretStore?: SecretStore;
+  private readonly secretPromptHandler?: SecretPromptHandler;
 
   constructor(
     private readonly llm: LLMProvider,
     private readonly memory: MemoryService,
     private readonly factExtractor: FactExtractor,
     tools: Array<Tool<any, any>> = [],
-    approvalHandler?: ToolApprovalHandler
+    approvalHandler?: ToolApprovalHandler,
+    secretStore?: SecretStore,
+    secretPromptHandler?: SecretPromptHandler
   ) {
     tools.forEach((tool) => this.toolCatalog.register(tool));
     this.approvalHandler = approvalHandler;
+    this.secretStore = secretStore;
+    this.secretPromptHandler = secretPromptHandler;
   }
 
   async init(): Promise<void> {
     await this.memory.init();
+    if (this.secretStore) {
+      await this.secretStore.init();
+    }
   }
 
   async chat(input: string): Promise<string> {
@@ -155,9 +174,34 @@ export class AgentOrchestrator {
           }
         }
 
+        let context: ToolExecutionContext | undefined;
+        try {
+          const env = await this.resolveToolSecrets(tool);
+          context = { toolName: tool.name, env };
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          const now = Date.now();
+          await this.memory.saveExecutionLog({
+            toolName: tool.name,
+            input: this.stringifyValue(action.input),
+            output: errorMessage,
+            status: "error",
+            startedAt: now,
+            finishedAt: now,
+          });
+          const toolMessage = this.renderToolErrorMessage(
+            tool.name,
+            errorMessage
+          );
+          console.log(`[tool] result -> LLM: ${toolMessage.content}`);
+          messages = [...promptBase, toolMessage];
+          continue;
+        }
+
         const startedAt = Date.now();
         try {
-          const output = await tool.execute(action.input);
+          const output = await tool.execute(action.input, context);
           const finishedAt = Date.now();
           await this.memory.saveExecutionLog({
             toolName: tool.name,
@@ -272,6 +316,57 @@ export class AgentOrchestrator {
     } catch {
       return false;
     }
+  }
+
+  private async resolveToolSecrets(
+    tool: Tool<any, any>
+  ): Promise<Record<string, string>> {
+    const required = tool.requiredSecrets ?? [];
+    if (required.length === 0) {
+      return {};
+    }
+    if (!this.secretStore || !this.secretPromptHandler) {
+      throw new Error(`Secrets required for ${tool.name} but no vault configured`);
+    }
+
+    const env: Record<string, string> = {};
+    for (const secretName of required) {
+      const key = this.buildSecretKey(tool.name, secretName);
+      let value = await this.secretStore.getSecret(key);
+      if (!value) {
+        const message = `Enter secret for ${tool.name} (${secretName}): `;
+        const provided = await this.requestSecret({
+          toolName: tool.name,
+          secretName,
+          key,
+          message,
+        });
+        if (typeof provided === "string" && provided.trim().length > 0) {
+          await this.secretStore.setSecretOnce(key, provided.trim());
+        }
+        value = await this.secretStore.getSecret(key);
+      }
+      if (!value) {
+        throw new Error(`Missing required secret: ${secretName}`);
+      }
+      env[key] = value;
+    }
+    return env;
+  }
+
+  private async requestSecret(request: SecretRequest): Promise<string | null> {
+    try {
+      if (!this.secretPromptHandler) {
+        return null;
+      }
+      return await this.secretPromptHandler(request);
+    } catch {
+      return null;
+    }
+  }
+
+  private buildSecretKey(toolName: string, secretName: string): string {
+    return `${toolName}-${secretName}`;
   }
 
   private parseAction(text: string): LlmAction {
