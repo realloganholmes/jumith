@@ -104,10 +104,6 @@ export class RegistryClient {
 
   private parseToolSummary(data: unknown): RegistryToolSummary {
     const record = this.requireRecord(data, "tool summary");
-    const runtime = this.requireString(entryRecord.runtime, "entry runtime");
-    if (runtime !== "node") {
-      throw new Error(`Unsupported runtime: ${runtime}`);
-    }
     return {
       id: this.requireString(record.id, "tool id"),
       name: this.requireString(record.name, "tool name"),
