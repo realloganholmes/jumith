@@ -1,0 +1,51 @@
+import readline from "node:readline";
+import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
+import { AgentOrchestrator } from "./AgentOrchestrator";
+import { SqliteMemoryService } from "../memory/SqliteMemoryService";
+
+const apiKey = process.env.LLM_API_KEY ?? "";
+const baseUrl = process.env.LLM_BASE_URL ?? "https://api.openai.com";
+const model = process.env.LLM_MODEL ?? "gpt-4o-mini";
+
+if (!apiKey) {
+  throw new Error("Missing LLM_API_KEY");
+}
+
+const llm = new OpenAICompatibleProvider({
+  apiKey,
+  baseUrl,
+  model,
+  timeoutMs: 30000,
+});
+
+const memory = new SqliteMemoryService("jumith.db");
+const agent = new AgentOrchestrator(llm, memory);
+
+async function main(): Promise<void> {
+  await agent.init();
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const ask = (prompt: string) =>
+    new Promise<string>((resolve) => rl.question(prompt, resolve));
+
+  while (true) {
+    const input = await ask("> ");
+    if (input.trim().toLowerCase() === "exit") {
+      break;
+    }
+
+    const response = await agent.chat(input);
+    console.log(response);
+  }
+
+  rl.close();
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
