@@ -1,6 +1,6 @@
 import sqlite3 from "sqlite3";
 import { ChatMessage } from "../llm/LLMProvider";
-import { FactInput, FactRecord, MemoryService } from "./MemoryService";
+import { ExecutionLogInput, FactInput, FactRecord, MemoryService } from "./MemoryService";
 
 export class SqliteMemoryService implements MemoryService {
   private db: sqlite3.Database;
@@ -23,6 +23,17 @@ export class SqliteMemoryService implements MemoryService {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at INTEGER NOT NULL
+      )
+    `);
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS execution_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool_name TEXT NOT NULL,
+        input TEXT NOT NULL,
+        output TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL
       )
     `);
   }
@@ -89,6 +100,24 @@ export class SqliteMemoryService implements MemoryService {
     params.push(limit);
 
     return this.all<FactRecord>(sql, params);
+  }
+
+  async saveExecutionLog(log: ExecutionLogInput): Promise<void> {
+    await this.run(
+      `
+        INSERT INTO execution_logs
+          (tool_name, input, output, status, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        log.toolName,
+        log.input,
+        log.output,
+        log.status,
+        log.startedAt,
+        log.finishedAt,
+      ]
+    );
   }
 
   private run(sql: string, params: unknown[] = []): Promise<void> {

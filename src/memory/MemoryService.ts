@@ -6,6 +6,7 @@ export interface MemoryService {
   getRecentMessages(limit: number): Promise<ChatMessage[]>;
   upsertFacts(facts: FactInput[]): Promise<void>;
   searchFacts(terms: string[], limit: number): Promise<FactRecord[]>;
+  saveExecutionLog(log: ExecutionLogInput): Promise<void>;
 }
 
 export interface FactInput {
@@ -15,4 +16,13 @@ export interface FactInput {
 
 export interface FactRecord extends FactInput {
   updatedAt: number;
+}
+
+export interface ExecutionLogInput {
+  toolName: string;
+  input: string;
+  output: string;
+  status: "success" | "error";
+  startedAt: number;
+  finishedAt: number;
 }

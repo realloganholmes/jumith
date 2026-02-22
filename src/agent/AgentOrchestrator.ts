@@ -1,17 +1,25 @@
 import { ChatMessage, LLMProvider } from "../llm/LLMProvider";
 import { FactExtractor } from "../memory/FactExtractor";
 import { FactRecord, MemoryService } from "../memory/MemoryService";
+import { Tool } from "../tools/Tool";
+import { ToolCatalog } from "../tools/ToolCatalog";
 
 type LlmAction =
   | { action: "search_facts"; terms: string[] }
+  | { action: "use_tool"; name: string; input: unknown }
   | { action: "final"; response: string };
 
 export class AgentOrchestrator {
+  private readonly toolCatalog = new ToolCatalog();
+
   constructor(
     private readonly llm: LLMProvider,
     private readonly memory: MemoryService,
-    private readonly factExtractor: FactExtractor
-  ) { }
+    private readonly factExtractor: FactExtractor,
+    tools: Array<Tool<unknown, unknown>> = []
+  ) {
+    tools.forEach((tool) => this.toolCatalog.register(tool));
+  }
 
   async init(): Promise<void> {
     await this.memory.init();
@@ -36,6 +44,7 @@ export class AgentOrchestrator {
   private async generateReplyWithFactSearch(
     history: ChatMessage[]
   ): Promise<string> {
+    const toolList = this.renderToolList();
     const promptBase: ChatMessage[] = [
       {
         role: "system",
@@ -56,10 +65,16 @@ export class AgentOrchestrator {
 
           "Only say you do not know if AND ONLY IF the fact search returns no relevant results.\n\n" +
 
+          "Available tools:\n" +
+          `${toolList}\n\n` +
+
+          "To use a tool, return ONLY JSON:\n" +
+          '{"action":"use_tool","name":"tool_name","input":{}}\n\n' +
+
           "To search facts, return ONLY JSON:\n" +
           '{"action":"search_facts","terms":["term1","term2"]}\n\n' +
 
-          "After receiving fact results, return ONLY JSON:\n" +
+          "After receiving fact or tool results, return ONLY JSON:\n" +
           '{"action":"final","response":"..."}'
       },
       ...history,
@@ -74,11 +89,59 @@ export class AgentOrchestrator {
         return action.response;
       }
 
-      console.log(`[tool] search_facts: ${action.terms.join(", ")}`);
-      const facts = await this.memory.searchFacts(action.terms, 8);
-      const factsMessage = this.renderFactsMessage(facts);
-      console.log(`[tool] Found facts: ${factsMessage.content}`);
-      messages = [...promptBase, factsMessage];
+      if (action.action === "search_facts") {
+        console.log(`[tool] search_facts: ${action.terms.join(", ")}`);
+        const facts = await this.memory.searchFacts(action.terms, 8);
+        const factsMessage = this.renderFactsMessage(facts);
+        console.log(`[tool] Found facts: ${factsMessage.content}`);
+        messages = [...promptBase, factsMessage];
+        continue;
+      }
+
+      if (action.action === "use_tool") {
+        const tool = this.toolCatalog.get(action.name);
+        if (!tool) {
+          const toolMessage = this.renderToolErrorMessage(
+            action.name,
+            "Tool not available."
+          );
+          messages = [...promptBase, toolMessage];
+          continue;
+        }
+
+        const startedAt = Date.now();
+        try {
+          const output = await tool.execute(action.input);
+          const finishedAt = Date.now();
+          await this.memory.saveExecutionLog({
+            toolName: tool.name,
+            input: this.stringifyValue(action.input),
+            output: this.stringifyValue(output),
+            status: "success",
+            startedAt,
+            finishedAt,
+          });
+          const toolMessage = this.renderToolResultMessage(tool.name, output);
+          messages = [...promptBase, toolMessage];
+        } catch (error) {
+          const finishedAt = Date.now();
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          await this.memory.saveExecutionLog({
+            toolName: tool.name,
+            input: this.stringifyValue(action.input),
+            output: errorMessage,
+            status: "error",
+            startedAt,
+            finishedAt,
+          });
+          const toolMessage = this.renderToolErrorMessage(
+            tool.name,
+            errorMessage
+          );
+          messages = [...promptBase, toolMessage];
+        }
+      }
     }
 
     return "I could not complete the request.";
@@ -99,6 +162,41 @@ export class AgentOrchestrator {
     };
   }
 
+  private renderToolResultMessage(toolName: string, output: unknown): ChatMessage {
+    return {
+      role: "system",
+      content: `Tool result (${toolName}): ${this.stringifyValue(output)}`,
+    };
+  }
+
+  private renderToolErrorMessage(toolName: string, message: string): ChatMessage {
+    return {
+      role: "system",
+      content: `Tool result (${toolName}): error: ${message}`,
+    };
+  }
+
+  private renderToolList(): string {
+    const tools = this.toolCatalog.list();
+    if (tools.length === 0) {
+      return "- (none)";
+    }
+    return tools
+      .map((tool) => `- ${tool.name}: ${tool.description}`)
+      .join("\n");
+  }
+
+  private stringifyValue(value: unknown): string {
+    if (typeof value === "string") {
+      return value;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
   private parseAction(text: string): LlmAction {
     const json = this.extractJsonObject(text);
     if (!json) {
@@ -111,6 +209,13 @@ export class AgentOrchestrator {
         return {
           action: "search_facts",
           terms: parsed.terms.map((term) => String(term)),
+        };
+      }
+      if (parsed.action === "use_tool" && typeof parsed.name === "string") {
+        return {
+          action: "use_tool",
+          name: parsed.name,
+          input: parsed.input ?? {},
         };
       }
       if (parsed.action === "final" && typeof parsed.response === "string") {
