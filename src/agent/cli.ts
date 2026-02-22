@@ -27,16 +27,8 @@ const llm = new OpenAICompatibleProvider({
 
 const memory = new SqliteMemoryService("jumith.db");
 const factExtractor = new LLMFactExtractor(llm, memory);
-const agent = new AgentOrchestrator(llm, memory, factExtractor, [
-  new EchoTool(),
-  new TimeTool(),
-  new AddTool(),
-  new PizzaOrderTool(),
-]);
 
 async function main(): Promise<void> {
-  await agent.init();
-
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -44,6 +36,21 @@ async function main(): Promise<void> {
 
   const ask = (prompt: string) =>
     new Promise<string>((resolve) => rl.question(prompt, resolve));
+
+  const confirm = async (message: string): Promise<boolean> => {
+    const answer = (await ask(`${message} (y/n): `)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  };
+
+  const agent = new AgentOrchestrator(
+    llm,
+    memory,
+    factExtractor,
+    [new EchoTool(), new TimeTool(), new AddTool(), new PizzaOrderTool()],
+    async ({ message }) => confirm(message)
+  );
+
+  await agent.init();
 
   while (true) {
     const input = await ask("> ");

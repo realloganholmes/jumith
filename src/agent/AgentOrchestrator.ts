@@ -9,16 +9,27 @@ type LlmAction =
   | { action: "use_tool"; name: string; input: unknown }
   | { action: "final"; response: string };
 
+type ToolApprovalRequest = {
+  toolName: string;
+  input: unknown;
+  message: string;
+};
+
+type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<boolean>;
+
 export class AgentOrchestrator {
   private readonly toolCatalog = new ToolCatalog();
+  private readonly approvalHandler?: ToolApprovalHandler;
 
   constructor(
     private readonly llm: LLMProvider,
     private readonly memory: MemoryService,
     private readonly factExtractor: FactExtractor,
-    tools: Array<Tool<unknown, unknown>> = []
+    tools: Array<Tool<any, any>> = [],
+    approvalHandler?: ToolApprovalHandler
   ) {
     tools.forEach((tool) => this.toolCatalog.register(tool));
+    this.approvalHandler = approvalHandler;
   }
 
   async init(): Promise<void> {
@@ -115,6 +126,35 @@ export class AgentOrchestrator {
           continue;
         }
 
+        if (tool.requiresApproval) {
+          const approvalMessage = this.buildApprovalMessage(tool, action.input);
+          console.log(`[tool] approval: ${approvalMessage}`);
+          const approved = await this.requestToolApproval({
+            toolName: tool.name,
+            input: action.input,
+            message: approvalMessage,
+          });
+          console.log(`[tool] approval result: ${approved ? "approved" : "denied"}`);
+          if (!approved) {
+            const now = Date.now();
+            await this.memory.saveExecutionLog({
+              toolName: tool.name,
+              input: this.stringifyValue(action.input),
+              output: "User denied tool execution.",
+              status: "denied",
+              startedAt: now,
+              finishedAt: now,
+            });
+            const toolMessage = this.renderToolErrorMessage(
+              tool.name,
+              "User denied tool execution."
+            );
+            console.log(`[tool] result -> LLM: ${toolMessage.content}`);
+            messages = [...promptBase, toolMessage];
+            continue;
+          }
+        }
+
         const startedAt = Date.now();
         try {
           const output = await tool.execute(action.input);
@@ -202,6 +242,35 @@ export class AgentOrchestrator {
       return JSON.stringify(value);
     } catch {
       return String(value);
+    }
+  }
+
+  private buildApprovalMessage(
+    tool: Tool<any, any>,
+    input: unknown
+  ): string {
+    if (tool.getApprovalMessage) {
+      try {
+        return tool.getApprovalMessage(input);
+      } catch (error) {
+        const fallback =
+          error instanceof Error ? error.message : String(error);
+        return `Approve ${tool.name} with input: ${this.stringifyValue(input)}? (${fallback})`;
+      }
+    }
+    return `Approve ${tool.name} with input: ${this.stringifyValue(input)}?`;
+  }
+
+  private async requestToolApproval(
+    request: ToolApprovalRequest
+  ): Promise<boolean> {
+    if (!this.approvalHandler) {
+      return false;
+    }
+    try {
+      return await this.approvalHandler(request);
+    } catch {
+      return false;
     }
   }
 

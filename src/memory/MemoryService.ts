@@ -22,7 +22,7 @@ export interface ExecutionLogInput {
   toolName: string;
   input: string;
   output: string;
-  status: "success" | "error";
+  status: "success" | "error" | "denied";
   startedAt: number;
   finishedAt: number;
 }
