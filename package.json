@@ -25,10 +25,10 @@
   },
   "homepage": "https://github.com/realloganholmes/jumith#readme",
   "dependencies": {
+    "@types/node": "^25.3.0",
     "sqlite3": "^5.1.7"
   },
   "devDependencies": {
-    "@types/node": "^25.2.3",
     "@typescript-eslint/eslint-plugin": "^8.55.0",
     "@typescript-eslint/parser": "^8.55.0",
     "eslint": "^9.39.2",

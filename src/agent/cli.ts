@@ -1,4 +1,4 @@
-import readline from "node:readline";
+import readline from "readline";
 import { OpenAICompatibleProvider } from "../llm/OpenAICompatibleProvider";
 import { AgentOrchestrator } from "./AgentOrchestrator";
 import { SqliteMemoryService } from "../memory/SqliteMemoryService";

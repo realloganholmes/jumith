@@ -46,7 +46,9 @@ export class SqliteMemoryService implements MemoryService {
 
   private all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+      this.db.all(sql, params, (err, rows) =>
+        err ? reject(err) : resolve(rows as T[])
+      );
     });
   }
 }
