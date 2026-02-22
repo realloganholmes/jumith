@@ -56,6 +56,10 @@ export class SqliteMemoryService implements MemoryService {
     }));
   }
 
+  async clearChatHistory(): Promise<void> {
+    await this.run("DELETE FROM chat_messages");
+  }
+
   async upsertFacts(facts: FactInput[]): Promise<void> {
     if (facts.length === 0) {
       return;
@@ -100,6 +104,29 @@ export class SqliteMemoryService implements MemoryService {
     params.push(limit);
 
     return this.all<FactRecord>(sql, params);
+  }
+
+  async getAllFacts(): Promise<FactRecord[]> {
+    const sql = `
+      SELECT key, value, updated_at as updatedAt
+      FROM facts
+      ORDER BY updated_at DESC
+    `;
+    return this.all<FactRecord>(sql);
+  }
+
+  async getRecentFacts(limit: number): Promise<FactRecord[]> {
+    const sql = `
+      SELECT key, value, updated_at as updatedAt
+      FROM facts
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `;
+    return this.all<FactRecord>(sql, [limit]);
+  }
+
+  async clearFacts(): Promise<void> {
+    await this.run("DELETE FROM facts");
   }
 
   async saveExecutionLog(log: ExecutionLogInput): Promise<void> {

@@ -4,8 +4,12 @@ export interface MemoryService {
   init(): Promise<void>;
   saveMessage(message: ChatMessage): Promise<void>;
   getRecentMessages(limit: number): Promise<ChatMessage[]>;
+  clearChatHistory(): Promise<void>;
   upsertFacts(facts: FactInput[]): Promise<void>;
   searchFacts(terms: string[], limit: number): Promise<FactRecord[]>;
+  getAllFacts(): Promise<FactRecord[]>;
+  getRecentFacts(limit: number): Promise<FactRecord[]>;
+  clearFacts(): Promise<void>;
   saveExecutionLog(log: ExecutionLogInput): Promise<void>;
 }
 

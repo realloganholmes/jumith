@@ -38,6 +38,19 @@ export class SqliteSecretStore implements SecretStore {
     return result.changes > 0;
   }
 
+  async deleteSecret(key: string): Promise<boolean> {
+    const result = await this.runWithChanges(
+      "DELETE FROM tool_secrets WHERE key = ?",
+      [key]
+    );
+    return result.changes > 0;
+  }
+
+  async clearAllSecrets(): Promise<number> {
+    const result = await this.runWithChanges("DELETE FROM tool_secrets");
+    return result.changes;
+  }
+
   private run(sql: string, params: unknown[] = []): Promise<void> {
     return new Promise((resolve, reject) => {
       this.db.run(sql, params, (err) => (err ? reject(err) : resolve()));

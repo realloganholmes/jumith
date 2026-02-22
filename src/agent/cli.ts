@@ -7,6 +7,7 @@ import { AddTool } from "../tools/AddTool";
 import { EchoTool } from "../tools/EchoTool";
 import { PizzaOrderTool } from "../tools/PizzaOrderTool";
 import { TimeTool } from "../tools/TimeTool";
+import { Tool } from "../tools/Tool";
 import { SqliteSecretStore } from "../vault/SqliteSecretStore";
 import dotenv from "dotenv";
 dotenv.config();
@@ -49,11 +50,169 @@ async function main(): Promise<void> {
     return value.length > 0 ? value : null;
   };
 
+  const tools: Array<Tool<any, any>> = [
+    new EchoTool(),
+    new TimeTool(),
+    new AddTool(),
+    new PizzaOrderTool(),
+  ];
+  const toolsByName = new Map<string, Tool<any, any>>(
+    tools.map((tool) => [tool.name, tool])
+  );
+
+  const buildSecretKey = (toolName: string, secretName: string): string =>
+    `${toolName}-${secretName}`;
+
+  const printHelp = (): void => {
+    console.log("Commands:");
+    console.log("  help | ?                        Show this help");
+    console.log("  tools                           List available tools");
+    console.log("  tool <name>                     Describe a tool");
+    console.log("  secrets status <tool>           Show secrets status for a tool");
+    console.log("  secrets clear <tool>            Clear secrets for a tool");
+    console.log("  secrets clear-all               Clear all secrets");
+    console.log("  secrets set <tool> <name>       Set a secret once");
+    console.log("  history [n]                     Show last n chat messages");
+    console.log("  history clear                   Clear chat history");
+    console.log("  facts [n]                       List facts (optionally limit)");
+    console.log("  facts clear                     Clear all facts");
+    console.log("  chat clear                      Clear chat history");
+    console.log("  exit                            Quit");
+  };
+
+  const printToolList = (): void => {
+    if (tools.length === 0) {
+      console.log("No tools registered.");
+      return;
+    }
+    console.log("Tools:");
+    for (const tool of tools) {
+      console.log(`  - ${tool.name}: ${tool.description}`);
+    }
+  };
+
+  const printToolDescription = (toolName: string): void => {
+    const tool = toolsByName.get(toolName);
+    if (!tool) {
+      console.log(`Tool not found: ${toolName}`);
+      return;
+    }
+    const secrets = tool.requiredSecrets ?? [];
+    console.log(`Name: ${tool.name}`);
+    console.log(`Description: ${tool.description}`);
+    console.log(`Requires approval: ${tool.requiresApproval ? "yes" : "no"}`);
+    console.log(
+      `Required secrets: ${secrets.length > 0 ? secrets.join(", ") : "(none)"}`
+    );
+  };
+
+  const showSecretStatus = async (toolName: string): Promise<void> => {
+    const tool = toolsByName.get(toolName);
+    if (!tool) {
+      console.log(`Tool not found: ${toolName}`);
+      return;
+    }
+    const secrets = tool.requiredSecrets ?? [];
+    if (secrets.length === 0) {
+      console.log(`Tool ${tool.name} requires no secrets.`);
+      return;
+    }
+    console.log(`Secrets for ${tool.name}:`);
+    for (const secretName of secrets) {
+      const key = buildSecretKey(tool.name, secretName);
+      const value = await secretStore.getSecret(key);
+      console.log(`  - ${secretName}: ${value ? "set" : "missing"}`);
+    }
+  };
+
+  const clearSecretsForTool = async (toolName: string): Promise<void> => {
+    const tool = toolsByName.get(toolName);
+    if (!tool) {
+      console.log(`Tool not found: ${toolName}`);
+      return;
+    }
+    const secrets = tool.requiredSecrets ?? [];
+    if (secrets.length === 0) {
+      console.log(`Tool ${tool.name} requires no secrets.`);
+      return;
+    }
+    let cleared = 0;
+    for (const secretName of secrets) {
+      const key = buildSecretKey(tool.name, secretName);
+      const removed = await secretStore.deleteSecret(key);
+      if (removed) {
+        cleared += 1;
+      }
+    }
+    console.log(`Cleared ${cleared} secrets for ${tool.name}.`);
+  };
+
+  const showHistory = async (limit: number): Promise<void> => {
+    const messages = await memory.getRecentMessages(limit);
+    if (messages.length === 0) {
+      console.log("No chat history.");
+      return;
+    }
+    for (const message of messages) {
+      console.log(`${message.role}: ${message.content}`);
+    }
+  };
+
+  const showFacts = async (): Promise<void> => {
+    const facts = await memory.getAllFacts();
+    if (facts.length === 0) {
+      console.log("No facts stored.");
+      return;
+    }
+    for (const fact of facts) {
+      console.log(`- ${fact.key}: ${fact.value}`);
+    }
+  };
+
+  const setSecretForTool = async (
+    toolName: string,
+    secretName: string
+  ): Promise<void> => {
+    const tool = toolsByName.get(toolName);
+    if (!tool) {
+      console.log(`Tool not found: ${toolName}`);
+      return;
+    }
+    const secrets = tool.requiredSecrets ?? [];
+    if (!secrets.includes(secretName)) {
+      console.log(
+        `Secret not declared on ${tool.name}. Expected one of: ${
+          secrets.length > 0 ? secrets.join(", ") : "(none)"
+        }`
+      );
+      return;
+    }
+    const key = buildSecretKey(tool.name, secretName);
+    const existing = await secretStore.getSecret(key);
+    if (existing) {
+      console.log(`Secret already set for ${tool.name} (${secretName}).`);
+      return;
+    }
+    const value = await promptSecret(
+      `Enter secret for ${tool.name} (${secretName}): `
+    );
+    if (!value) {
+      console.log("Secret not set (empty value).");
+      return;
+    }
+    const stored = await secretStore.setSecretOnce(key, value);
+    console.log(
+      stored
+        ? `Secret set for ${tool.name} (${secretName}).`
+        : `Secret already set for ${tool.name} (${secretName}).`
+    );
+  };
+
   const agent = new AgentOrchestrator(
     llm,
     memory,
     factExtractor,
-    [new EchoTool(), new TimeTool(), new AddTool(), new PizzaOrderTool()],
+    tools,
     async ({ message }) => confirm(message),
     secretStore,
     async ({ message }) => promptSecret(message)
@@ -63,8 +222,116 @@ async function main(): Promise<void> {
 
   while (true) {
     const input = await ask("> ");
-    if (input.trim().toLowerCase() === "exit") {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const [command, ...rest] = trimmed.split(/\s+/);
+    const lowerCommand = command.toLowerCase();
+
+    if (lowerCommand === "exit") {
       break;
+    }
+    if (lowerCommand === "help" || lowerCommand === "?") {
+      printHelp();
+      continue;
+    }
+    if (lowerCommand === "tools") {
+      printToolList();
+      continue;
+    }
+    if (lowerCommand === "tool") {
+      const toolName = rest.join(" ").trim();
+      if (!toolName) {
+        console.log("Usage: tool <name>");
+        continue;
+      }
+      printToolDescription(toolName);
+      continue;
+    }
+    if (lowerCommand === "secrets") {
+      const action = rest[0]?.toLowerCase();
+      if (action === "status") {
+        const toolName = rest.slice(1).join(" ").trim();
+        if (!toolName) {
+          console.log("Usage: secrets status <tool>");
+          continue;
+        }
+        await showSecretStatus(toolName);
+        continue;
+      }
+      if (action === "clear") {
+        const toolName = rest.slice(1).join(" ").trim();
+        if (!toolName) {
+          console.log("Usage: secrets clear <tool>");
+          continue;
+        }
+        await clearSecretsForTool(toolName);
+        continue;
+      }
+      if (action === "clear-all") {
+        const cleared = await secretStore.clearAllSecrets();
+        console.log(`Cleared ${cleared} secrets total.`);
+        continue;
+      }
+      if (action === "set") {
+        const toolName = rest[1]?.trim();
+        const secretName = rest[2]?.trim();
+        if (!toolName || !secretName) {
+          console.log("Usage: secrets set <tool> <name>");
+          continue;
+        }
+        await setSecretForTool(toolName, secretName);
+        continue;
+      }
+      console.log(
+        "Usage: secrets status <tool> | secrets clear <tool> | secrets clear-all | secrets set <tool> <name>"
+      );
+      continue;
+    }
+    if (lowerCommand === "history") {
+      const action = rest[0]?.toLowerCase();
+      if (action === "clear") {
+        await memory.clearChatHistory();
+        console.log("Cleared chat history.");
+        continue;
+      }
+      const limit = Number(rest[0] ?? "20");
+      const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
+      await showHistory(safeLimit);
+      continue;
+    }
+    if (lowerCommand === "facts") {
+      const action = rest[0]?.toLowerCase();
+      if (action === "clear") {
+        await memory.clearFacts();
+        console.log("Cleared all facts.");
+        continue;
+      }
+      const limit = Number(rest[0]);
+      if (Number.isFinite(limit) && limit > 0) {
+        const facts = await memory.getRecentFacts(limit);
+        if (facts.length === 0) {
+          console.log("No facts stored.");
+          continue;
+        }
+        for (const fact of facts) {
+          console.log(`- ${fact.key}: ${fact.value}`);
+        }
+        continue;
+      }
+      await showFacts();
+      continue;
+    }
+    if (lowerCommand === "chat") {
+      const action = rest[0]?.toLowerCase();
+      if (action === "clear") {
+        await memory.clearChatHistory();
+        console.log("Cleared chat history.");
+        continue;
+      }
+      console.log("Usage: chat clear");
+      continue;
     }
 
     const response = await agent.chat(input);
