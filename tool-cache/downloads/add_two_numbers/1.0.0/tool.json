@@ -1,0 +1,42 @@
+{
+  "id": "tool:add_two_numbers",
+  "name": "add_two_numbers",
+  "version": "1.0.0",
+  "summary": "Add two numbers and return the sum.",
+  "description": "Add two numbers and return the sum.",
+  "provider": "community",
+  "entry": {
+    "runtime": "node",
+    "main": "dist/index.js",
+    "export": "tool"
+  },
+  "schema": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "a": {
+          "type": "number"
+        },
+        "b": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "a",
+        "b"
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "sum": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "sum"
+      ]
+    }
+  },
+  "requiresApproval": false
+}

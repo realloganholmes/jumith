@@ -14,7 +14,7 @@ type LoadedToolsResult = {
 };
 
 export class LocalToolStore {
-  constructor(private readonly rootDir: string) {}
+  constructor(private readonly rootDir: string) { }
 
   async init(): Promise<void> {
     try {
@@ -40,6 +40,25 @@ export class LocalToolStore {
       return manifest;
     } catch (error) {
       throw new Error(`Failed to install tool: ${(error as Error).message}`);
+    }
+  }
+
+  async downloadBundle(bundle: RegistryToolBundle): Promise<string> {
+    try {
+      const { manifest } = bundle;
+      const safeId = this.safeToolId(manifest.name);
+      const downloadDir = path.join(
+        this.rootDir,
+        "downloads",
+        safeId,
+        manifest.version
+      );
+      await fs.mkdir(downloadDir, { recursive: true });
+      await this.writeBundleFiles(downloadDir, bundle.files);
+      await this.writeJson(path.join(downloadDir, "tool.json"), manifest);
+      return downloadDir;
+    } catch (error) {
+      throw new Error(`Failed to download tool: ${(error as Error).message}`);
     }
   }
 

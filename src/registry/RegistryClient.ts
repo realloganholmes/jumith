@@ -135,9 +135,9 @@ export class RegistryClient {
       },
       schema: schemaRecord
         ? {
-            input: schemaRecord.input,
-            output: schemaRecord.output,
-          }
+          input: schemaRecord.input,
+          output: schemaRecord.output,
+        }
         : undefined,
       requiresApproval: this.readOptionalBoolean(record.requiresApproval),
       requiredSecrets: this.readStringArray(record.requiredSecrets),

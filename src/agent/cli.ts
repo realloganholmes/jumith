@@ -19,7 +19,7 @@ dotenv.config();
 const apiKey = process.env.LLM_API_KEY ?? "";
 const baseUrl = process.env.LLM_BASE_URL ?? "https://api.openai.com";
 const model = process.env.LLM_MODEL ?? "gpt-4o-mini";
-const registryBaseUrl = process.env.REGISTRY_BASE_URL ?? "";
+const registryBaseUrl = process.env.REGISTRY_BASE_URL ?? "http://localhost:4000";
 const toolCacheDir = process.env.TOOL_CACHE_DIR ?? "tool-cache";
 
 if (!apiKey) {
@@ -107,6 +107,7 @@ async function main(): Promise<void> {
     console.log("  tool <name>                     Describe a tool");
     console.log("  registry search <query>         Search the registry");
     console.log("  registry describe <id>          Show registry tool details");
+    console.log("  registry download <id> [version] Download tool bundle to cache");
     console.log("  secrets status <tool>           Show secrets status for a tool");
     console.log("  secrets clear <tool>            Clear secrets for a tool");
     console.log("  secrets clear-all               Clear all secrets");
@@ -188,6 +189,7 @@ async function main(): Promise<void> {
   };
 
   const describeRegistryTool = async (toolId: string): Promise<void> => {
+    console.log(`[registry] describing tool: ${toolId}`);
     try {
       if (!registry) {
         console.log("Registry not configured. Set REGISTRY_BASE_URL.");
@@ -208,14 +210,40 @@ async function main(): Promise<void> {
         `Requires approval: ${tool.requiresApproval ? "yes" : "no"}`
       );
       console.log(
-        `Required secrets: ${
-          tool.requiredSecrets && tool.requiredSecrets.length > 0
-            ? tool.requiredSecrets.join(", ")
-            : "(none)"
+        `Required secrets: ${tool.requiredSecrets && tool.requiredSecrets.length > 0
+          ? tool.requiredSecrets.join(", ")
+          : "(none)"
         }`
       );
     } catch (error) {
       console.log(`Registry describe failed: ${(error as Error).message}`);
+    }
+  };
+
+  const downloadRegistryTool = async (
+    toolId: string,
+    version?: string
+  ): Promise<void> => {
+    try {
+      if (!registry) {
+        console.log("Registry not configured. Set REGISTRY_BASE_URL.");
+        return;
+      }
+      const trimmed = toolId.trim();
+      if (!trimmed) {
+        console.log("Usage: registry download <id> [version]");
+        return;
+      }
+      const targetVersion =
+        version ?? (await registry.describeTool(trimmed)).version;
+      const bundle = await registry.downloadToolBundle(trimmed, targetVersion);
+      const downloadDir = await toolStore.downloadBundle(bundle);
+      console.log(
+        `Downloaded ${bundle.manifest.name} (${bundle.manifest.id}) @ ${bundle.manifest.version}`
+      );
+      console.log(`Saved to ${downloadDir}`);
+    } catch (error) {
+      console.log(`Registry download failed: ${(error as Error).message}`);
     }
   };
 
@@ -333,8 +361,7 @@ async function main(): Promise<void> {
     const secrets = tool.requiredSecrets ?? [];
     if (!secrets.includes(secretName)) {
       console.log(
-        `Secret not declared on ${tool.name}. Expected one of: ${
-          secrets.length > 0 ? secrets.join(", ") : "(none)"
+        `Secret not declared on ${tool.name}. Expected one of: ${secrets.length > 0 ? secrets.join(", ") : "(none)"
         }`
       );
       return;
@@ -424,7 +451,15 @@ async function main(): Promise<void> {
         await describeRegistryTool(toolId);
         continue;
       }
-      console.log("Usage: registry search <query> | registry describe <id>");
+      if (action === "download") {
+        const toolId = rest[1] ?? "";
+        const version = rest[2];
+        await downloadRegistryTool(toolId, version);
+        continue;
+      }
+      console.log(
+        "Usage: registry search <query> | registry describe <id> | registry download <id> [version]"
+      );
       continue;
     }
     if (lowerCommand === "tool") {
