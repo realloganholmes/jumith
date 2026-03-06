@@ -5,14 +5,10 @@ import { AgentOrchestrator } from "./AgentOrchestrator";
 import { LLMFactExtractor } from "../memory/LLMFactExtractor";
 import { SqliteMemoryService } from "../memory/SqliteMemoryService";
 import { RegistryClient } from "../registry/RegistryClient";
-import { AddTool } from "../tools/AddTool";
-import { EchoTool } from "../tools/EchoTool";
 import { LocalToolStore } from "../tools/LocalToolStore";
-import { PizzaOrderTool } from "../tools/PizzaOrderTool";
 import { RegistryDescribeTool } from "../tools/RegistryDescribeTool";
 import { RegistryInstallTool } from "../tools/RegistryInstallTool";
 import { RegistrySearchTool } from "../tools/RegistrySearchTool";
-import { TimeTool } from "../tools/TimeTool";
 import { Tool } from "../tools/Tool";
 import { ToolInstaller } from "../tools/ToolInstaller";
 import { SqliteSecretStore } from "../vault/SqliteSecretStore";
@@ -67,12 +63,7 @@ async function main(): Promise<void> {
   await toolStore.init();
   const installer = registry ? new ToolInstaller(registry, toolStore) : null;
 
-  const localTools: Array<Tool<unknown, unknown>> = [
-    new EchoTool(),
-    new TimeTool(),
-    new AddTool(),
-    new PizzaOrderTool(),
-  ];
+  const localTools: Array<Tool<unknown, unknown>> = [];
   const registryTools: Array<Tool<unknown, unknown>> = [];
   let installedTools: Array<Tool<unknown, unknown>> = [];
   let tools: Array<Tool<unknown, unknown>> = [];
@@ -246,10 +237,11 @@ async function main(): Promise<void> {
         version ?? (await registry.describeTool(trimmed)).version;
       const bundle = await registry.downloadToolBundle(trimmed, targetVersion);
       const downloadDir = await toolStore.downloadBundle(bundle);
+      const manifest = await toolStore.installBundle(bundle);
+      await refreshTools();
       console.log(
-        `Downloaded ${bundle.manifest.name} (${bundle.manifest.id}) @ ${bundle.manifest.version}`
+        `Installed ${manifest.name} (${manifest.id}) @ ${manifest.version}`
       );
-      console.log(`Saved to ${downloadDir}`);
     } catch (error) {
       console.log(`Registry download failed: ${(error as Error).message}`);
     }

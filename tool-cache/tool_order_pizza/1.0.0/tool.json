@@ -1,0 +1,42 @@
+{
+  "id": "tool:order_pizza",
+  "name": "order_pizza",
+  "version": "1.0.0",
+  "summary": "Order a pizza.",
+  "description": "Order a pizza.",
+  "provider": "community",
+  "entry": {
+    "runtime": "node",
+    "main": "dist/index.js",
+    "export": "tool"
+  },
+  "schema": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "first_name": "string",
+        "last_name": "string",
+        "address": "string",
+        "pizza_size": "string",
+        "pizza_toppings": "string"
+      },
+      "required": [
+        "first_name",
+        "last_name",
+        "address",
+        "pizza_size",
+        "pizza_toppings"
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "response": "string"
+      },
+      "required": [
+        "response"
+      ]
+    }
+  },
+  "requiresApproval": false
+}
