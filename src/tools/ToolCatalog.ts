@@ -7,6 +7,11 @@ export class ToolCatalog {
     this.tools.set(tool.name, tool);
   }
 
+  setTools(tools: Tool<any, any>[]): void {
+    this.tools.clear();
+    tools.forEach((tool) => this.register(tool));
+  }
+
   get(name: string): Tool<any, any> | undefined {
     return this.tools.get(name);
   }

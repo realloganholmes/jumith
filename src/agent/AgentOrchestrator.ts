@@ -48,6 +48,10 @@ export class AgentOrchestrator {
     this.secretPromptHandler = secretPromptHandler;
   }
 
+  setTools(tools: Array<Tool<any, any>>): void {
+    this.toolCatalog.setTools(tools);
+  }
+
   async init(): Promise<void> {
     await this.memory.init();
     if (this.secretStore) {
@@ -101,13 +105,14 @@ export class AgentOrchestrator {
           "Available tools:\n" +
           `${toolList}\n\n` +
 
-          "To use a tool, return ONLY JSON:\n" +
+          "To use a tool, return ONLY JSON of this exact format. Any other format is trictly prohibited. All fields in these examples are required. The action is to tell what is happening, not to put in any custom data:\n" +
+          "The 'action' field must always be one of the following values: 'use_tool', 'search_facts', 'final'.\n" +
+          "The 'name' field must be the name of a valid tool from the list of available tools.\n" +
+          "The 'input' field must be a JSON object containing the input data for the tool.\n" +
+          "The 'terms' field must be an array of strings containing the terms to search for in the fact store.\n" +
+          "The 'response' field must be a string containing the response to the user.\n\n" +
           '{"action":"use_tool","name":"tool_name","input":{}}\n\n' +
-
-          "To search facts, return ONLY JSON:\n" +
           '{"action":"search_facts","terms":["term1","term2"]}\n\n' +
-
-          "After receiving fact or tool results, return ONLY JSON:\n" +
           '{"action":"final","response":"..."}'
       },
       ...history,
@@ -115,7 +120,7 @@ export class AgentOrchestrator {
 
     let messages = promptBase;
     for (let step = 0; step < 5; step += 1) {
-      const response = await this.llm.chat(messages, { temperature: 0 });
+      const response = await this.llm.chat(messages, { temperature: 1 });
       const action = this.parseAction(response);
 
       if (action.action === "final") {

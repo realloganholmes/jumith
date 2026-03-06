@@ -23,7 +23,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const url = new URL("/v1/chat/completions", this.config.baseUrl).toString();
       const body = {
         model: options?.model ?? this.config.model,
-        temperature: options?.temperature ?? 0.7,
+        temperature: 1,
         messages,
       };
 

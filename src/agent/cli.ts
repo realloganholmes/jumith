@@ -9,6 +9,9 @@ import { AddTool } from "../tools/AddTool";
 import { EchoTool } from "../tools/EchoTool";
 import { LocalToolStore } from "../tools/LocalToolStore";
 import { PizzaOrderTool } from "../tools/PizzaOrderTool";
+import { RegistryDescribeTool } from "../tools/RegistryDescribeTool";
+import { RegistryInstallTool } from "../tools/RegistryInstallTool";
+import { RegistrySearchTool } from "../tools/RegistrySearchTool";
 import { TimeTool } from "../tools/TimeTool";
 import { Tool } from "../tools/Tool";
 import { ToolInstaller } from "../tools/ToolInstaller";
@@ -70,18 +73,23 @@ async function main(): Promise<void> {
     new AddTool(),
     new PizzaOrderTool(),
   ];
+  const registryTools: Array<Tool<unknown, unknown>> = [];
   let installedTools: Array<Tool<unknown, unknown>> = [];
   let tools: Array<Tool<unknown, unknown>> = [];
   let toolsByName = new Map<string, Tool<unknown, unknown>>();
+  let agent: AgentOrchestrator | null = null;
 
   const refreshTools = async (): Promise<void> => {
     try {
       const loaded = await toolStore.loadTools();
       installedTools = loaded.tools;
-      tools = [...localTools, ...installedTools];
+      tools = [...localTools, ...registryTools, ...installedTools];
       toolsByName = new Map<string, Tool<unknown, unknown>>(
         tools.map((tool) => [tool.name, tool])
       );
+      if (agent) {
+        agent.setTools(tools);
+      }
       if (loaded.errors.length > 0) {
         console.log("Some installed tools failed to load:");
         for (const error of loaded.errors) {
@@ -387,7 +395,7 @@ async function main(): Promise<void> {
     );
   };
 
-  const agent = new AgentOrchestrator(
+  agent = new AgentOrchestrator(
     llm,
     memory,
     factExtractor,
@@ -396,6 +404,15 @@ async function main(): Promise<void> {
     secretStore,
     async ({ message }) => promptSecret(message)
   );
+
+  if (registry && installer) {
+    registryTools.push(
+      new RegistrySearchTool(registry),
+      new RegistryDescribeTool(registry),
+      new RegistryInstallTool(installer, refreshTools)
+    );
+  }
+  await refreshTools();
 
   await agent.init();
 
