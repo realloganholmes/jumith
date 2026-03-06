@@ -21,6 +21,15 @@ export class RegistrySearchTool
   name = "registry_search";
   description =
     "Search the registry for tools. Input: { query: string, limit?: number }";
+  inputSchema = {
+    type: "object",
+    properties: {
+      query: { type: "string" },
+      limit: { type: "integer", minimum: 1 },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  };
 
   constructor(private readonly registry: RegistryClient) { }
 

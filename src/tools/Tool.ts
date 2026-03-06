@@ -6,6 +6,8 @@ export type ToolExecutionContext = {
 export interface Tool<Input, Output> {
   name: string;
   description: string;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
   requiredSecrets?: string[];
   requiresApproval?: boolean;
   getApprovalMessage?(input: Input): string;

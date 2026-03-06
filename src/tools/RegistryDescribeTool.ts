@@ -12,6 +12,14 @@ export class RegistryDescribeTool
   implements Tool<RegistryDescribeInput, RegistryDescribeOutput> {
   name = "registry_describe";
   description = "Describe a registry tool. Input: { id: string }";
+  inputSchema = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  };
 
   constructor(private readonly registry: RegistryClient) { }
 

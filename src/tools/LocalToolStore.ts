@@ -172,6 +172,8 @@ export class LocalToolStore {
     return {
       name: candidate.name ?? manifest.name,
       description: candidate.description ?? manifest.summary ?? manifest.description,
+      inputSchema: candidate.inputSchema ?? manifest.schema?.input,
+      outputSchema: candidate.outputSchema ?? manifest.schema?.output,
       requiredSecrets: candidate.requiredSecrets ?? manifest.requiredSecrets,
       requiresApproval: candidate.requiresApproval ?? manifest.requiresApproval,
       getApprovalMessage: candidate.getApprovalMessage

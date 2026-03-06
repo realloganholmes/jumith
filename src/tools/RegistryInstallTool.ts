@@ -19,6 +19,15 @@ export class RegistryInstallTool
   name = "registry_install";
   description =
     "Install a registry tool. Input: { id: string, version?: string }";
+  inputSchema = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      version: { type: "string" },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  };
 
   constructor(
     private readonly installer: ToolInstaller,

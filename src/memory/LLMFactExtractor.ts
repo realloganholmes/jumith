@@ -11,7 +11,7 @@ export class LLMFactExtractor implements FactExtractor {
   constructor(
     private readonly llm: LLMProvider,
     private readonly memory: MemoryService
-  ) {}
+  ) { }
 
   async extract(messages: ChatMessage[]): Promise<void> {
     try {
@@ -34,7 +34,7 @@ export class LLMFactExtractor implements FactExtractor {
         },
       ];
 
-      const response = await this.llm.chat(prompt, { temperature: 0 });
+      const response = await this.llm.chat(prompt, { temperature: 1 });
       const facts = this.parseFacts(response);
       if (facts.length === 0) {
         return;
