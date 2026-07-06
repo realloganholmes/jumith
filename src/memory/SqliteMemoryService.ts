@@ -1,6 +1,14 @@
 import sqlite3 from "sqlite3";
 import { ChatMessage } from "../llm/LLMProvider";
-import { ExecutionLogInput, FactInput, FactRecord, MemoryService } from "./MemoryService";
+import {
+  ExecutionLogInput,
+  ExecutionLogRecord,
+  FactInput,
+  FactRecord,
+  MemoryService,
+  StoredMessage,
+  SummaryState,
+} from "./MemoryService";
 
 export class SqliteMemoryService implements MemoryService {
   private db: sqlite3.Database;
@@ -36,13 +44,21 @@ export class SqliteMemoryService implements MemoryService {
         finished_at INTEGER NOT NULL
       )
     `);
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS conversation_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        summary TEXT NOT NULL,
+        last_message_id INTEGER NOT NULL
+      )
+    `);
   }
 
-  async saveMessage(message: ChatMessage): Promise<void> {
-    await this.run(
+  async saveMessage(message: ChatMessage): Promise<number> {
+    const result = await this.runWithMeta(
       "INSERT INTO chat_messages (role, content, timestamp) VALUES (?, ?, ?)",
       [message.role, message.content, Date.now()]
     );
+    return result.lastID;
   }
 
   async getRecentMessages(limit: number): Promise<ChatMessage[]> {
@@ -56,8 +72,59 @@ export class SqliteMemoryService implements MemoryService {
     }));
   }
 
+  async getMessagesAfter(
+    messageId: number,
+    limit?: number
+  ): Promise<StoredMessage[]> {
+    const sql = `
+      SELECT id, role, content, timestamp
+      FROM chat_messages
+      WHERE id > ?
+      ORDER BY id ASC
+      ${limit ? "LIMIT ?" : ""}
+    `;
+    const params: unknown[] = limit ? [messageId, limit] : [messageId];
+    const rows = await this.all<{
+      id: number;
+      role: string;
+      content: string;
+      timestamp: number;
+    }>(sql, params);
+    return rows.map((row) => ({
+      id: row.id,
+      role: row.role as ChatMessage["role"],
+      content: row.content,
+      timestamp: row.timestamp,
+    }));
+  }
+
   async clearChatHistory(): Promise<void> {
     await this.run("DELETE FROM chat_messages");
+    await this.run("DELETE FROM conversation_state");
+  }
+
+  async getSummaryState(): Promise<SummaryState | null> {
+    const row = await this.getRow<{
+      summary: string;
+      last_message_id: number;
+    }>("SELECT summary, last_message_id FROM conversation_state WHERE id = 1");
+    if (!row) {
+      return null;
+    }
+    return { summary: row.summary, lastMessageId: row.last_message_id };
+  }
+
+  async setSummaryState(state: SummaryState): Promise<void> {
+    await this.run(
+      `
+        INSERT INTO conversation_state (id, summary, last_message_id)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          summary = excluded.summary,
+          last_message_id = excluded.last_message_id
+      `,
+      [state.summary, state.lastMessageId]
+    );
   }
 
   async upsertFacts(facts: FactInput[]): Promise<void> {
@@ -80,7 +147,9 @@ export class SqliteMemoryService implements MemoryService {
   }
 
   async searchFacts(terms: string[], limit: number): Promise<FactRecord[]> {
-    const normalizedTerms = terms.map((term) => term.trim()).filter(Boolean);
+    const normalizedTerms = terms
+      .map((term) => term.trim().toLowerCase())
+      .filter(Boolean);
     if (normalizedTerms.length === 0) {
       return [];
     }
@@ -88,7 +157,7 @@ export class SqliteMemoryService implements MemoryService {
     const likeClauses: string[] = [];
     const params: Array<string | number> = [];
     for (const term of normalizedTerms) {
-      const likeValue = `%${term.toLowerCase()}%`;
+      const likeValue = `%${term}%`;
       likeClauses.push("LOWER(key) LIKE ?");
       likeClauses.push("LOWER(value) LIKE ?");
       params.push(likeValue, likeValue);
@@ -99,11 +168,31 @@ export class SqliteMemoryService implements MemoryService {
       FROM facts
       WHERE ${likeClauses.join(" OR ")}
       ORDER BY updated_at DESC
-      LIMIT ?
     `;
-    params.push(limit);
 
-    return this.all<FactRecord>(sql, params);
+    const rows = await this.all<FactRecord>(sql, params);
+    return rankFacts(rows, normalizedTerms).slice(0, limit);
+  }
+
+  async getFactsByKeys(keys: string[]): Promise<FactRecord[]> {
+    const normalized = keys.map((key) => key.trim()).filter(Boolean);
+    if (normalized.length === 0) {
+      return [];
+    }
+    const placeholders = normalized.map(() => "?").join(", ");
+    const sql = `
+      SELECT key, value, updated_at as updatedAt
+      FROM facts
+      WHERE key IN (${placeholders})
+    `;
+    return this.all<FactRecord>(sql, normalized);
+  }
+
+  async getFactKeys(): Promise<string[]> {
+    const rows = await this.all<{ key: string }>(
+      "SELECT key FROM facts ORDER BY key"
+    );
+    return rows.map((row) => row.key);
   }
 
   async getAllFacts(): Promise<FactRecord[]> {
@@ -123,6 +212,13 @@ export class SqliteMemoryService implements MemoryService {
       LIMIT ?
     `;
     return this.all<FactRecord>(sql, [limit]);
+  }
+
+  async deleteFact(key: string): Promise<boolean> {
+    const result = await this.runWithMeta("DELETE FROM facts WHERE key = ?", [
+      key,
+    ]);
+    return result.changes > 0;
   }
 
   async clearFacts(): Promise<void> {
@@ -147,9 +243,64 @@ export class SqliteMemoryService implements MemoryService {
     );
   }
 
+  async getRecentExecutionLogs(limit: number): Promise<ExecutionLogRecord[]> {
+    const rows = await this.all<{
+      id: number;
+      tool_name: string;
+      input: string;
+      output: string;
+      status: string;
+      started_at: number;
+      finished_at: number;
+    }>(
+      `
+        SELECT id, tool_name, input, output, status, started_at, finished_at
+        FROM execution_logs
+        ORDER BY id DESC
+        LIMIT ?
+      `,
+      [limit]
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      toolName: row.tool_name,
+      input: row.input,
+      output: row.output,
+      status: row.status as ExecutionLogRecord["status"],
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+    }));
+  }
+
   private run(sql: string, params: unknown[] = []): Promise<void> {
     return new Promise((resolve, reject) => {
       this.db.run(sql, params, (err) => (err ? reject(err) : resolve()));
+    });
+  }
+
+  private runWithMeta(
+    sql: string,
+    params: unknown[] = []
+  ): Promise<{ lastID: number; changes: number }> {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, function (this: sqlite3.RunResult, err) {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve({ lastID: this.lastID ?? 0, changes: this.changes ?? 0 });
+      });
+    });
+  }
+
+  private getRow<T>(
+    sql: string,
+    params: unknown[] = []
+  ): Promise<T | undefined> {
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, (err, row) =>
+        err ? reject(err) : resolve(row as T | undefined)
+      );
     });
   }
 
@@ -160,4 +311,34 @@ export class SqliteMemoryService implements MemoryService {
       );
     });
   }
+}
+
+/**
+ * Ranks fact rows by match quality: exact key match, then key word match,
+ * then key substring, then value match, with recency as the tiebreaker.
+ */
+function rankFacts(rows: FactRecord[], terms: string[]): FactRecord[] {
+  const scored = rows.map((row) => {
+    const key = row.key.toLowerCase();
+    const value = row.value.toLowerCase();
+    const keyWords = key.split(/[_\s-]+/);
+    let score = 0;
+    for (const term of terms) {
+      if (key === term) {
+        score += 100;
+      } else if (keyWords.includes(term)) {
+        score += 50;
+      } else if (key.includes(term)) {
+        score += 25;
+      }
+      if (value.includes(term)) {
+        score += 10;
+      }
+    }
+    return { row, score };
+  });
+  scored.sort(
+    (a, b) => b.score - a.score || b.row.updatedAt - a.row.updatedAt
+  );
+  return scored.map((item) => item.row);
 }

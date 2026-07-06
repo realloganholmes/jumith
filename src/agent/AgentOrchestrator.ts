@@ -3,57 +3,111 @@ import {
   LLMProvider,
   LLMToolCall,
   LLMToolDefinition,
+  LLMToolResponse,
 } from "../llm/LLMProvider";
+import { ConversationSummarizer } from "../memory/ConversationSummarizer";
 import { FactExtractor } from "../memory/FactExtractor";
 import { FactRecord, MemoryService } from "../memory/MemoryService";
-import { Tool, ToolExecutionContext } from "../tools/Tool";
+import {
+  buildSecretKey,
+  isSharedSecret,
+  resolveRequiredSecrets,
+  resolveRequiresApproval,
+  Tool,
+  ToolExecutionContext,
+} from "../tools/Tool";
 import { ToolCatalog } from "../tools/ToolCatalog";
 import { SecretStore } from "../vault/SecretStore";
 
-type ToolApprovalRequest = {
+export type ToolApprovalRequest = {
   toolName: string;
   input: unknown;
   message: string;
 };
 
-type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<boolean>;
+export type ToolApprovalHandler = (
+  request: ToolApprovalRequest
+) => Promise<boolean>;
 
-type SecretRequest = {
+export type SecretRequest = {
   toolName: string;
   secretName: string;
   key: string;
+  shared: boolean;
   message: string;
 };
 
-type SecretPromptHandler = (request: SecretRequest) => Promise<string | null>;
+export type SecretPromptHandler = (
+  request: SecretRequest
+) => Promise<string | null>;
 
-type SearchFactsInput = {
-  terms: string[];
+export type AgentEvent =
+  | { type: "status"; message: string }
+  | { type: "tool_call"; toolName: string; input: unknown }
+  | {
+      type: "tool_result";
+      toolName: string;
+      status: "success" | "error" | "denied";
+      output: string;
+      durationMs: number;
+    }
+  | { type: "memory_lookup"; query: string[]; found: number }
+  | { type: "facts_saved"; keys: string[] }
+  | { type: "approval_requested"; toolName: string; message: string }
+  | { type: "approval_resolved"; toolName: string; approved: boolean }
+  | { type: "secret_requested"; toolName: string; secretName: string };
+
+export type AgentEventHandler = (event: AgentEvent) => void;
+
+export type AgentOrchestratorOptions = {
+  llm: LLMProvider;
+  memory: MemoryService;
+  factExtractor?: FactExtractor;
+  tools?: Array<Tool<any, any>>;
+  approvalHandler?: ToolApprovalHandler;
+  secretStore?: SecretStore;
+  secretPromptHandler?: SecretPromptHandler;
+  onEvent?: AgentEventHandler;
+  maxSteps?: number;
 };
+
+type SearchFactsInput = { terms: string[] };
+type GetFactsInput = { keys: string[] };
+type SaveFactsInput = { facts: Array<{ key: string; value: string }> };
+
+const BUILTIN_TOOL_NAMES = new Set(["search_facts", "get_facts", "save_facts"]);
 
 export class AgentOrchestrator {
   private readonly toolCatalog = new ToolCatalog();
+  private readonly llm: LLMProvider;
+  private readonly memory: MemoryService;
+  private readonly factExtractor?: FactExtractor;
   private readonly approvalHandler?: ToolApprovalHandler;
   private readonly secretStore?: SecretStore;
   private readonly secretPromptHandler?: SecretPromptHandler;
+  private readonly onEvent?: AgentEventHandler;
+  private readonly maxSteps: number;
+  private readonly summarizer: ConversationSummarizer;
 
-  constructor(
-    private readonly llm: LLMProvider,
-    private readonly memory: MemoryService,
-    private readonly factExtractor: FactExtractor,
-    tools: Array<Tool<any, any>> = [],
-    approvalHandler?: ToolApprovalHandler,
-    secretStore?: SecretStore,
-    secretPromptHandler?: SecretPromptHandler
-  ) {
-    tools.forEach((tool) => this.toolCatalog.register(tool));
-    this.approvalHandler = approvalHandler;
-    this.secretStore = secretStore;
-    this.secretPromptHandler = secretPromptHandler;
+  constructor(options: AgentOrchestratorOptions) {
+    this.llm = options.llm;
+    this.memory = options.memory;
+    this.factExtractor = options.factExtractor;
+    this.approvalHandler = options.approvalHandler;
+    this.secretStore = options.secretStore;
+    this.secretPromptHandler = options.secretPromptHandler;
+    this.onEvent = options.onEvent;
+    this.maxSteps = options.maxSteps ?? 24;
+    this.summarizer = new ConversationSummarizer(this.llm, this.memory);
+    (options.tools ?? []).forEach((tool) => this.toolCatalog.register(tool));
   }
 
   setTools(tools: Array<Tool<any, any>>): void {
     this.toolCatalog.setTools(tools);
+  }
+
+  listTools(): Array<Tool<any, any>> {
+    return this.toolCatalog.list();
   }
 
   async init(): Promise<void> {
@@ -68,28 +122,27 @@ export class AgentOrchestrator {
       const userMessage: ChatMessage = { role: "user", content: input };
       await this.memory.saveMessage(userMessage);
 
-      const history = await this.memory.getRecentMessages(20);
-      const reply = await this.generateReplyWithFactSearch(history);
+      const reply = await this.runAgentLoop();
 
       await this.memory.saveMessage({ role: "assistant", content: reply });
-      await this.safeExtractFacts([userMessage]);
+      await this.safeExtractFacts([
+        userMessage,
+        { role: "assistant", content: reply },
+      ]);
       return reply;
     } catch (error) {
       throw new Error(`Chat failed: ${(error as Error).message}`);
     }
   }
 
-  private async generateReplyWithFactSearch(
-    history: ChatMessage[]
-  ): Promise<string> {
-    const promptBase: ChatMessage[] = [this.buildSystemPrompt(), ...history];
+  private async runAgentLoop(): Promise<string> {
+    const context = await this.summarizer.buildContext();
+    const systemPrompt = await this.buildSystemPrompt(context.summary);
     const toolDefinitions = this.buildToolDefinitions();
 
-    let messages = promptBase;
-    for (let step = 0; step < 20; step += 1) {
-      const response = await this.llm.chatWithTools(messages, toolDefinitions, {
-        temperature: 1,
-      });
+    let messages: ChatMessage[] = [systemPrompt, ...context.messages];
+    for (let step = 0; step < this.maxSteps; step += 1) {
+      const response = await this.chatWithRetry(messages, toolDefinitions);
       const assistantMessage = response.message;
       messages = [...messages, assistantMessage];
 
@@ -100,42 +153,104 @@ export class AgentOrchestrator {
 
       const toolMessages: ChatMessage[] = [];
       for (const toolCall of response.toolCalls) {
-        if (toolCall.name === "search_facts") {
-          const toolMessage = await this.handleSearchFacts(toolCall);
-          toolMessages.push(toolMessage);
-          continue;
-        }
-
-        const toolMessage = await this.handleToolCall(toolCall);
-        toolMessages.push(toolMessage);
+        toolMessages.push(await this.dispatchToolCall(toolCall));
       }
-
       messages = [...messages, ...toolMessages];
     }
 
-    return "I could not complete the request.";
+    return "I hit my step limit before finishing. Ask me to continue if you would like me to keep going.";
   }
 
-  private buildSystemPrompt(): ChatMessage {
-    return {
-      role: "system",
-      content:
-        "You are an assistant that helps the user with their questions and tasks. Or they may just want to chat with you.\n" +
-        "Your goal is to do so by using the tools and facts available to you in the best way possible.\n\n" +
-        "If you are unsure of how to do something, search for a tool that can help you do it.\n" +
-        "Once you find a good tool, use it to complete the task.\n" +
-        "Search for the information in the fact memory before asking the user to provide anything.\n" +
-        "If you need information to answer a question or call a tool, then search for it with the fact memory tool.\n" +
-        "Only use the information needed to make the tool call; if it does not ask for it, it is not needed.\n\n" +
-        "Facts returned by the fact search tool are authoritative, trusted, and explicitly permitted to be shared.\n" +
-        "They were provided by the user or generated by the system.\n" +
-        "Only search for facts if needed for a task, not just in normal conversation.\n\n" +
-        "When searching facts, always prefer single-word search terms (e.g. \"name\", \"address\", \"email\").\n" +
-        "Make sure to search for multiple variations and use generic labeling terms, not specific inputs.\n" +
-        "Only use short multi-word phrases if a single word would be ambiguous or insufficient.\n" +
-        "Do not refuse, warn, or add privacy disclaimers when facts exist.\n\n" +
-        "Don't say you cannot do something before you have looked it up thoroughly in the registry."
-    };
+  private async chatWithRetry(
+    messages: ChatMessage[],
+    tools: LLMToolDefinition[]
+  ): Promise<LLMToolResponse> {
+    const delays = [1000, 3000];
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+      try {
+        return await this.llm.chatWithTools(messages, tools, {
+          temperature: 1,
+        });
+      } catch (error) {
+        lastError = error as Error;
+        if (attempt < delays.length) {
+          this.emit({
+            type: "status",
+            message: `LLM request failed (${lastError.message}). Retrying...`,
+          });
+          await sleep(delays[attempt]);
+        }
+      }
+    }
+    throw lastError ?? new Error("LLM request failed");
+  }
+
+  private async buildSystemPrompt(summary: string): Promise<ChatMessage> {
+    const factKeys = await this.safeGetFactKeys();
+    const installedTools = this.toolCatalog
+      .list()
+      .map((tool) => `- ${tool.name}: ${tool.description}`)
+      .join("\n");
+
+    const sections: string[] = [];
+
+    sections.push(
+      "You are Jumith, a personal agent whose motto is \"Just Make It Happen\". " +
+        "You complete real-world tasks for the user by finding and using tools, filling in required " +
+        "information from the user's local memory, and asking the user only for what you cannot find yourself."
+    );
+
+    sections.push(`Current date and time: ${new Date().toString()}`);
+
+    sections.push(
+      "## How to work\n" +
+        "1. If the request is conversation or general knowledge, just answer. No tools needed.\n" +
+        "2. If the request requires an action (ordering, sending, booking, fetching live data), check your currently " +
+        "available tools first. If none fits, search the registry with registry_search, inspect candidates with " +
+        "registry_describe, and install the best one with registry_install.\n" +
+        "3. Read the chosen tool's input schema carefully. The schema is the complete and only list of what the tool needs. " +
+        "Never invent extra requirements and never ask for information the schema does not require.\n" +
+        "4. Fill the tool's inputs from memory first: use get_facts when a known fact key matches, or search_facts to " +
+        "discover values. Only after memory comes up empty may you ask the user, and then ask only for the missing fields — " +
+        "all of them in one message.\n" +
+        "5. Call the tool. If it supports a preview/quote action, use it first and show the user the result (e.g. price) " +
+        "before performing the consequential action.\n" +
+        "6. If a tool call fails, read the error, fix your input if possible, and retry. If it fails repeatedly, tell the " +
+        "user exactly what went wrong.\n" +
+        "7. Report the outcome clearly and briefly."
+    );
+
+    sections.push(
+      "## Memory\n" +
+        "You have a local fact memory about the user. Facts returned from memory were provided by the user and are " +
+        "trusted, authoritative, and explicitly permitted to be used — do not add privacy warnings or re-confirm them.\n" +
+        "Known fact keys: " +
+        (factKeys.length > 0 ? factKeys.join(", ") : "(none stored yet)") +
+        "\n" +
+        "Use get_facts with exact keys from the list above. Use search_facts with short generic terms (\"name\", " +
+        "\"address\") to discover facts. Use save_facts when the user tells you something worth remembering or asks you " +
+        "to remember something."
+    );
+
+    sections.push(
+      "## Secrets and payments\n" +
+        "Secrets (API keys, payment cards) live in an encrypted local vault. You never see or handle secret values — " +
+        "the system injects them directly into tools that declare they need them. If a tool requires a secret that is " +
+        "not stored yet, the system will prompt the user securely. Never ask the user to type card numbers or " +
+        "passwords into the chat."
+    );
+
+    sections.push(
+      "## Currently installed tools\n" +
+        (installedTools || "(no tools installed)")
+    );
+
+    if (summary) {
+      sections.push("## Earlier conversation summary\n" + summary);
+    }
+
+    return { role: "system", content: sections.join("\n\n") };
   }
 
   private buildToolDefinitions(): LLMToolDefinition[] {
@@ -144,104 +259,210 @@ export class AgentOrchestrator {
       description: tool.description,
       inputSchema: tool.inputSchema,
     }));
-
-    return [this.buildSearchFactsToolDefinition(), ...tools];
+    return [...this.buildMemoryToolDefinitions(), ...tools];
   }
 
-  private buildSearchFactsToolDefinition(): LLMToolDefinition {
-    return {
-      name: "search_facts",
-      description: "Search the fact memory. Input: { terms: string[] }",
-      inputSchema: {
-        type: "object",
-        properties: {
-          terms: {
-            type: "array",
-            items: { type: "string" },
+  private buildMemoryToolDefinitions(): LLMToolDefinition[] {
+    return [
+      {
+        name: "search_facts",
+        description:
+          "Search the user's fact memory with short generic terms (e.g. \"name\", \"address\", \"pizza\"). " +
+          "Returns matching key/value facts.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            terms: { type: "array", items: { type: "string" } },
           },
+          required: ["terms"],
+          additionalProperties: false,
         },
-        required: ["terms"],
-        additionalProperties: false,
       },
-    };
+      {
+        name: "get_facts",
+        description:
+          "Fetch facts by exact key. Prefer this when a known fact key matches what you need.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            keys: { type: "array", items: { type: "string" } },
+          },
+          required: ["keys"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "save_facts",
+        description:
+          "Save durable facts about the user to memory (snake_case keys). Use when the user shares or corrects " +
+          "lasting information. Never store passwords, card numbers, or other secrets.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            facts: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  key: { type: "string" },
+                  value: { type: "string" },
+                },
+                required: ["key", "value"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["facts"],
+          additionalProperties: false,
+        },
+      },
+    ];
   }
 
-  private async handleSearchFacts(toolCall: LLMToolCall): Promise<ChatMessage> {
-    const input = toolCall.arguments as SearchFactsInput | null;
-    const terms = Array.isArray(input?.terms)
-      ? input.terms.map((term) => String(term)).filter(Boolean)
-      : [];
+  private async dispatchToolCall(toolCall: LLMToolCall): Promise<ChatMessage> {
+    if (BUILTIN_TOOL_NAMES.has(toolCall.name)) {
+      return this.handleMemoryTool(toolCall);
+    }
+    return this.handleToolCall(toolCall);
+  }
 
-    console.log(`[tool] search_facts: ${terms.join(", ")}`);
-    if (terms.length === 0) {
+  private async handleMemoryTool(toolCall: LLMToolCall): Promise<ChatMessage> {
+    try {
+      if (toolCall.name === "search_facts") {
+        const input = toolCall.arguments as SearchFactsInput | null;
+        const terms = Array.isArray(input?.terms)
+          ? input.terms.map((term) => String(term)).filter(Boolean)
+          : [];
+        if (terms.length === 0) {
+          return this.buildToolMessage(toolCall.id, "Error: missing terms.");
+        }
+        const facts = await this.memory.searchFacts(terms, 8);
+        this.emit({ type: "memory_lookup", query: terms, found: facts.length });
+        return this.buildToolMessage(toolCall.id, renderFacts(facts));
+      }
+
+      if (toolCall.name === "get_facts") {
+        const input = toolCall.arguments as GetFactsInput | null;
+        const keys = Array.isArray(input?.keys)
+          ? input.keys.map((key) => String(key)).filter(Boolean)
+          : [];
+        if (keys.length === 0) {
+          return this.buildToolMessage(toolCall.id, "Error: missing keys.");
+        }
+        const facts = await this.memory.getFactsByKeys(keys);
+        this.emit({ type: "memory_lookup", query: keys, found: facts.length });
+        return this.buildToolMessage(toolCall.id, renderFacts(facts));
+      }
+
+      // save_facts
+      const input = toolCall.arguments as SaveFactsInput | null;
+      const facts = Array.isArray(input?.facts)
+        ? input.facts.filter(
+            (fact) =>
+              fact &&
+              typeof fact.key === "string" &&
+              typeof fact.value === "string" &&
+              fact.key.trim() &&
+              fact.value.trim()
+          )
+        : [];
+      if (facts.length === 0) {
+        return this.buildToolMessage(toolCall.id, "No valid facts provided.");
+      }
+      await this.memory.upsertFacts(
+        facts.map((fact) => ({ key: fact.key.trim(), value: fact.value.trim() }))
+      );
+      const keys = facts.map((fact) => fact.key.trim());
+      this.emit({ type: "facts_saved", keys });
+      return this.buildToolMessage(toolCall.id, `Saved facts: ${keys.join(", ")}`);
+    } catch (error) {
       return this.buildToolMessage(
         toolCall.id,
-        this.stringifyValue({ error: "Missing terms for fact search." })
+        `Error: ${(error as Error).message}`
       );
     }
-
-    const facts = await this.memory.searchFacts(terms, 8);
-    const content = this.renderFactsContent(facts);
-    console.log(`[tool] Found facts: ${content}`);
-    return this.buildToolMessage(toolCall.id, content);
   }
 
   private async handleToolCall(toolCall: LLMToolCall): Promise<ChatMessage> {
-    console.log(`[tool] use_tool: ${toolCall.name}`);
-    console.log(`[tool] input: ${this.stringifyValue(toolCall.arguments)}`);
+    this.emit({
+      type: "tool_call",
+      toolName: toolCall.name,
+      input: toolCall.arguments,
+    });
 
     const tool = this.toolCatalog.get(toolCall.name);
     if (!tool) {
       return this.buildToolMessage(
         toolCall.id,
-        this.stringifyValue({ error: "Tool not available." })
+        stringify({ error: "Tool not available." })
       );
     }
 
-    if (tool.requiresApproval) {
+    if (resolveRequiresApproval(tool, toolCall.arguments)) {
       const approvalMessage = this.buildApprovalMessage(tool, toolCall.arguments);
-      console.log(`[tool] approval: ${approvalMessage}`);
+      this.emit({
+        type: "approval_requested",
+        toolName: tool.name,
+        message: approvalMessage,
+      });
       const approved = await this.requestToolApproval({
         toolName: tool.name,
         input: toolCall.arguments,
         message: approvalMessage,
       });
-      console.log(`[tool] approval result: ${approved ? "approved" : "denied"}`);
+      this.emit({ type: "approval_resolved", toolName: tool.name, approved });
       if (!approved) {
         const now = Date.now();
         await this.memory.saveExecutionLog({
           toolName: tool.name,
-          input: this.stringifyValue(toolCall.arguments),
+          input: stringify(toolCall.arguments),
           output: "User denied tool execution.",
           status: "denied",
           startedAt: now,
           finishedAt: now,
         });
+        this.emit({
+          type: "tool_result",
+          toolName: tool.name,
+          status: "denied",
+          output: "User denied tool execution.",
+          durationMs: 0,
+        });
         return this.buildToolMessage(
           toolCall.id,
-          this.stringifyValue({ error: "User denied tool execution." })
+          stringify({
+            error:
+              "The user declined this action. Do not retry it unless the user asks again.",
+          })
         );
       }
     }
 
-    let context: ToolExecutionContext | undefined;
+    let context: ToolExecutionContext;
     try {
-      const env = await this.resolveToolSecrets(tool);
+      const env = await this.resolveToolSecrets(tool, toolCall.arguments);
       context = { toolName: tool.name, env };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const now = Date.now();
       await this.memory.saveExecutionLog({
         toolName: tool.name,
-        input: this.stringifyValue(toolCall.arguments),
+        input: stringify(toolCall.arguments),
         output: errorMessage,
         status: "error",
         startedAt: now,
         finishedAt: now,
       });
+      this.emit({
+        type: "tool_result",
+        toolName: tool.name,
+        status: "error",
+        output: errorMessage,
+        durationMs: 0,
+      });
       return this.buildToolMessage(
         toolCall.id,
-        this.stringifyValue({ error: errorMessage })
+        stringify({ error: errorMessage })
       );
     }
 
@@ -249,75 +470,62 @@ export class AgentOrchestrator {
     try {
       const output = await tool.execute(toolCall.arguments, context);
       const finishedAt = Date.now();
+      const rendered = stringify(output);
       await this.memory.saveExecutionLog({
         toolName: tool.name,
-        input: this.stringifyValue(toolCall.arguments),
-        output: this.stringifyValue(output),
+        input: stringify(toolCall.arguments),
+        output: rendered,
         status: "success",
         startedAt,
         finishedAt,
       });
-      return this.buildToolMessage(toolCall.id, this.stringifyValue(output));
+      this.emit({
+        type: "tool_result",
+        toolName: tool.name,
+        status: "success",
+        output: rendered,
+        durationMs: finishedAt - startedAt,
+      });
+      return this.buildToolMessage(toolCall.id, rendered);
     } catch (error) {
       const finishedAt = Date.now();
       const errorMessage = error instanceof Error ? error.message : String(error);
       await this.memory.saveExecutionLog({
         toolName: tool.name,
-        input: this.stringifyValue(toolCall.arguments),
+        input: stringify(toolCall.arguments),
         output: errorMessage,
         status: "error",
         startedAt,
         finishedAt,
       });
+      this.emit({
+        type: "tool_result",
+        toolName: tool.name,
+        status: "error",
+        output: errorMessage,
+        durationMs: finishedAt - startedAt,
+      });
       return this.buildToolMessage(
         toolCall.id,
-        this.stringifyValue({ error: errorMessage })
+        stringify({ error: errorMessage })
       );
     }
   }
 
   private buildToolMessage(toolCallId: string, content: string): ChatMessage {
-    return {
-      role: "tool",
-      content,
-      toolCallId,
-    };
+    return { role: "tool", content, toolCallId };
   }
 
-  private renderFactsContent(facts: FactRecord[]): string {
-    if (facts.length === 0) {
-      return "Fact search results: none found.";
-    }
-
-    const factLines = facts.map((fact) => `- ${fact.key}: ${fact.value}`);
-    return `Fact search results:\n${factLines.join("\n")}`;
-  }
-
-  private stringifyValue(value: unknown): string {
-    if (typeof value === "string") {
-      return value;
-    }
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
-  }
-
-  private buildApprovalMessage(
-    tool: Tool<any, any>,
-    input: unknown
-  ): string {
+  private buildApprovalMessage(tool: Tool<any, any>, input: unknown): string {
     if (tool.getApprovalMessage) {
       try {
         return tool.getApprovalMessage(input);
       } catch (error) {
-        const fallback =
-          error instanceof Error ? error.message : String(error);
-        return `Approve ${tool.name} with input: ${this.stringifyValue(input)}? (${fallback})`;
+        const fallback = error instanceof Error ? error.message : String(error);
+        return `Approve ${tool.name} with input: ${stringify(input)}? (${fallback})`;
       }
     }
-    return `Approve ${tool.name} with input: ${this.stringifyValue(input)}?`;
+    return `Approve ${tool.name} with input: ${stringify(input)}?`;
   }
 
   private async requestToolApproval(
@@ -334,37 +542,51 @@ export class AgentOrchestrator {
   }
 
   private async resolveToolSecrets(
-    tool: Tool<any, any>
+    tool: Tool<any, any>,
+    input: unknown
   ): Promise<Record<string, string>> {
-    const required = tool.requiredSecrets ?? [];
+    const required = resolveRequiredSecrets(tool, input);
     if (required.length === 0) {
       return {};
     }
     if (!this.secretStore || !this.secretPromptHandler) {
-      throw new Error(`Secrets required for ${tool.name} but no vault configured`);
+      throw new Error(
+        `Secrets required for ${tool.name} but no vault configured`
+      );
     }
 
     const env: Record<string, string> = {};
     for (const secretName of required) {
-      const key = this.buildSecretKey(tool.name, secretName);
+      const key = buildSecretKey(tool.name, secretName);
       let value = await this.secretStore.getSecret(key);
       if (!value) {
-        const message = `Enter secret for ${tool.name} (${secretName}): `;
+        this.emit({
+          type: "secret_requested",
+          toolName: tool.name,
+          secretName,
+        });
+        const shared = isSharedSecret(secretName);
+        const message = shared
+          ? `Enter ${secretName} (stored once in the vault, shared with payment-capable tools you approve): `
+          : `Enter secret for ${tool.name} (${secretName}): `;
         const provided = await this.requestSecret({
           toolName: tool.name,
           secretName,
           key,
+          shared,
           message,
         });
         if (typeof provided === "string" && provided.trim().length > 0) {
-          await this.secretStore.setSecretOnce(key, provided.trim());
+          await this.secretStore.setSecret(key, provided.trim());
         }
         value = await this.secretStore.getSecret(key);
       }
       if (!value) {
-        throw new Error(`Missing required secret: ${secretName}`);
+        throw new Error(
+          `Missing required secret: ${secretName}. The user declined to provide it.`
+        );
       }
-      env[key] = value;
+      env[secretName] = value;
     }
     return env;
   }
@@ -380,15 +602,57 @@ export class AgentOrchestrator {
     }
   }
 
-  private buildSecretKey(toolName: string, secretName: string): string {
-    return `${toolName}-${secretName}`;
-  }
-
   private async safeExtractFacts(messages: ChatMessage[]): Promise<void> {
+    if (!this.factExtractor) {
+      return;
+    }
     try {
-      await this.factExtractor.extract(messages);
-    } catch (error) {
-      console.error("Fact extraction failed", error);
+      const keys = await this.factExtractor.extract(messages);
+      if (keys.length > 0) {
+        this.emit({ type: "facts_saved", keys });
+      }
+    } catch {
+      // Fact extraction must never break the chat flow.
     }
   }
+
+  private async safeGetFactKeys(): Promise<string[]> {
+    try {
+      return await this.memory.getFactKeys();
+    } catch {
+      return [];
+    }
+  }
+
+  private emit(event: AgentEvent): void {
+    try {
+      this.onEvent?.(event);
+    } catch {
+      // Listeners must not break the agent.
+    }
+  }
+}
+
+function renderFacts(facts: FactRecord[]): string {
+  if (facts.length === 0) {
+    return "No matching facts found.";
+  }
+  return (
+    "Facts:\n" + facts.map((fact) => `- ${fact.key}: ${fact.value}`).join("\n")
+  );
+}
+
+function stringify(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

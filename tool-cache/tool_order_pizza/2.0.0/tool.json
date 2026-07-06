@@ -1,0 +1,96 @@
+{
+  "id": "tool:order_pizza",
+  "name": "order_pizza",
+  "version": "2.0.0",
+  "summary": "Order a real pizza from Domino's (US): quote the exact price first, then place the order with cash or the card saved in your vault.",
+  "description": "Orders a real Domino's pizza. Call with action 'quote' first to locate the nearest open store and get the real validated price and estimated wait (nothing is purchased). Then call with action 'place' to actually order — this requires user approval and charges real money. Payment is 'cash' (pay at the door/counter) or 'card', which uses the payment.* secrets stored securely in the local vault; card details are never exposed to the agent. Supports Delivery and Carryout, sizes small/medium/large/xl, crusts hand_tossed/thin/pan/brooklyn/gluten_free, and all standard Domino's toppings.",
+  "tags": ["food", "pizza", "delivery", "ordering", "dominos"],
+  "provider": "community",
+  "entry": {
+    "runtime": "node",
+    "main": "dist/index.js",
+    "export": "tool"
+  },
+  "schema": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["quote", "place"],
+          "description": "'quote' prices the order without purchasing (always do this first); 'place' actually orders."
+        },
+        "first_name": { "type": "string" },
+        "last_name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string", "description": "US phone number" },
+        "address": {
+          "type": "string",
+          "description": "Full US address: 'street, city, ST zip' (e.g. '700 N Michigan Ave, Chicago, IL 60611')"
+        },
+        "service_method": {
+          "type": "string",
+          "enum": ["Delivery", "Carryout"],
+          "description": "Defaults to Delivery"
+        },
+        "pizza_size": {
+          "type": "string",
+          "enum": ["small", "medium", "large", "xl"]
+        },
+        "crust": {
+          "type": "string",
+          "enum": ["hand_tossed", "thin", "pan", "brooklyn", "gluten_free"],
+          "description": "Defaults to hand_tossed. thin: medium/large only; pan: medium only; brooklyn: large/xl only; gluten_free: small only"
+        },
+        "toppings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Topping names, e.g. ['pepperoni', 'mushroom']. Empty list = plain cheese pizza"
+        },
+        "quantity": {
+          "type": "integer",
+          "description": "Number of pizzas (1-5), defaults to 1"
+        },
+        "payment_type": {
+          "type": "string",
+          "enum": ["card", "cash"],
+          "description": "'card' uses the card saved in the vault; 'cash' pays at the door/counter"
+        },
+        "tip_amount": {
+          "type": "number",
+          "description": "Optional driver tip in dollars (card payment only)"
+        }
+      },
+      "required": [
+        "action",
+        "first_name",
+        "last_name",
+        "email",
+        "phone",
+        "address",
+        "pizza_size",
+        "toppings",
+        "payment_type"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string" },
+        "placed": { "type": "boolean" },
+        "quote": { "type": "object" },
+        "confirmation": { "type": "object" }
+      },
+      "required": ["action", "placed"]
+    }
+  },
+  "usesPayment": true,
+  "requiresApproval": true,
+  "requiredSecrets": [
+    "payment.card_number",
+    "payment.card_expiration",
+    "payment.card_cvv",
+    "payment.card_zip"
+  ]
+}

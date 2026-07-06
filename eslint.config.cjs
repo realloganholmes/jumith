@@ -11,13 +11,28 @@ module.exports = [
       parserOptions: {
         project: "./tsconfig.json",
         sourceType: "module"
+      },
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        Buffer: "readonly",
+        __dirname: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        require: "readonly",
+        module: "readonly",
+        fetch: "readonly",
+        URL: "readonly",
+        AbortController: "readonly",
+        NodeJS: "readonly"
       }
     },
     plugins: {
       "@typescript-eslint": tsPlugin
     },
     rules: {
-      ...tsPlugin.configs.recommended.rules
+      ...tsPlugin.configs.recommended.rules,
+      "@typescript-eslint/no-explicit-any": "warn"
     }
   }
 ];

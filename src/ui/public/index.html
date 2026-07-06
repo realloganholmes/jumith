@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>jumith</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⚡</span>
+      <span class="brand-name">jumith</span>
+      <span class="brand-tag">just make it happen</span>
+    </div>
+    <div class="topbar-right">
+      <span id="conn-status" class="chip chip-muted">connecting…</span>
+      <button id="clear-chat" class="btn btn-ghost" title="Clear chat history">Clear chat</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat-panel">
+      <div id="chat-scroll" class="chat-scroll">
+        <div id="chat-messages" class="chat-messages">
+          <div class="chat-empty" id="chat-empty">
+            <div class="chat-empty-icon">⚡</div>
+            <h2>What should I make happen?</h2>
+            <p>Ask for anything. I'll find the right tool, fill in what I already know about you, and only ask for what's missing.</p>
+            <div class="suggestions">
+              <button class="suggestion">Order me a large pepperoni pizza</button>
+              <button class="suggestion">What tools do you have?</button>
+              <button class="suggestion">Remember that my favorite pizza topping is mushroom</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <form id="chat-form" class="chat-input-row">
+        <textarea id="chat-input" rows="1" placeholder="Message jumith…" autocomplete="off"></textarea>
+        <button type="submit" id="chat-send" class="btn btn-primary">Send</button>
+      </form>
+    </section>
+
+    <aside class="sidebar">
+      <nav class="tabs">
+        <button class="tab active" data-tab="tools">Tools</button>
+        <button class="tab" data-tab="registry">Registry</button>
+        <button class="tab" data-tab="memory">Memory</button>
+        <button class="tab" data-tab="vault">Vault</button>
+        <button class="tab" data-tab="activity">Activity</button>
+      </nav>
+
+      <div id="tab-tools" class="tab-body active">
+        <div class="tab-head">
+          <h3>Installed tools</h3>
+          <button class="btn btn-ghost btn-sm" data-refresh="tools">↻</button>
+        </div>
+        <div id="tools-list" class="list"></div>
+      </div>
+
+      <div id="tab-registry" class="tab-body">
+        <div class="tab-head"><h3>Tool registry</h3></div>
+        <form id="registry-search-form" class="search-row">
+          <input id="registry-search" type="text" placeholder="Search tools… (e.g. pizza)" />
+          <button type="submit" class="btn btn-sm btn-primary">Search</button>
+        </form>
+        <div id="registry-results" class="list"></div>
+      </div>
+
+      <div id="tab-memory" class="tab-body">
+        <div class="tab-head">
+          <h3>Facts about you</h3>
+          <div>
+            <button class="btn btn-ghost btn-sm" data-refresh="memory">↻</button>
+            <button id="facts-clear" class="btn btn-ghost btn-sm btn-danger-text">Clear all</button>
+          </div>
+        </div>
+        <form id="fact-add-form" class="fact-add">
+          <input id="fact-key" type="text" placeholder="key (e.g. home_address)" />
+          <input id="fact-value" type="text" placeholder="value" />
+          <button type="submit" class="btn btn-sm btn-primary">Add</button>
+        </form>
+        <div id="facts-list" class="list"></div>
+      </div>
+
+      <div id="tab-vault" class="tab-body">
+        <div class="tab-head">
+          <h3>Secret vault</h3>
+          <span id="vault-source" class="chip chip-muted"></span>
+        </div>
+        <p class="hint">Everything here is encrypted at rest (AES-256-GCM). Values are write-only: they can be set and cleared, never viewed. The agent never sees them.</p>
+
+        <div class="card">
+          <h4>💳 Payment card</h4>
+          <p class="hint">Saved once, shared with payment-capable tools — used only after you approve a purchase.</p>
+          <div id="payment-status" class="secret-status"></div>
+          <div class="payment-form">
+            <input id="pay-number" type="password" placeholder="Card number" autocomplete="off" />
+            <div class="payment-row">
+              <input id="pay-exp" type="password" placeholder="MM/YY" autocomplete="off" />
+              <input id="pay-cvv" type="password" placeholder="CVV" autocomplete="off" />
+              <input id="pay-zip" type="password" placeholder="Billing ZIP" autocomplete="off" />
+            </div>
+            <div class="payment-row">
+              <button id="pay-save" class="btn btn-sm btn-primary">Save card</button>
+              <button id="pay-clear" class="btn btn-sm btn-ghost btn-danger-text">Remove card</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="tool-secrets" class="tool-secrets"></div>
+
+        <button id="secrets-clear-all" class="btn btn-ghost btn-sm btn-danger-text">Clear entire vault</button>
+      </div>
+
+      <div id="tab-activity" class="tab-body">
+        <div class="tab-head">
+          <h3>Tool activity</h3>
+          <button class="btn btn-ghost btn-sm" data-refresh="activity">↻</button>
+        </div>
+        <div id="activity-list" class="list"></div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

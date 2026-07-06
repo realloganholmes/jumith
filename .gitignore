@@ -22,10 +22,6 @@ yarn-error.log*
 /.idea/
 /.vscode/
 
-# Output of TypeScript
-*.js
-*.js.map
-
 # Mac system files
 .DS_Store
 

@@ -147,11 +147,11 @@ export class LocalToolStore {
         manifest.version,
         manifest.entry.main
       );
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const moduleExports = require(modulePath) as unknown;
       const tool = this.extractTool(moduleExports, manifest);
       return tool;
-    } catch (error) {
+    } catch {
       return null;
     }
   }
